@@ -615,15 +615,33 @@ class EnvironmentWorker(Worker):
             ]  # when prepare for update, we do not add the state from the n+1 turn to the trajectory
 
         entry = self.env_entry # Get the current environment entry
+        is_deepresearch_env = (entry.get("tag") == "DeepResearchEnv")
 
-        if entry["tag"] == "DeepResearchEnv":
-            system_prompt_content = entry["status"].initial_system_prompt
-            task_desc_content = entry["status"].task_description # This was the first 'state' logged
+        if is_deepresearch_env:
+            system_prompt_content = None
+            if hasattr(self.env_entry["env"], 'get_system_prompt'):
+                system_prompt_content = self.env_entry["env"].get_system_prompt()
+
+            if not system_prompt_content: # Check if None or empty
+                self.logger.warning(f"Failed to get live system prompt for DeepResearchEnv (env_id: {env_output['env_id']}). Attempting fallback.")
+                if hasattr(self.env_entry["status"], 'initial_system_prompt'):
+                    system_prompt_content = self.env_entry["status"].initial_system_prompt
+
+                if not system_prompt_content: # Check again if None or empty
+                    self.logger.warning(f"Fallback system prompt also unavailable for DeepResearchEnv (env_id: {env_output['env_id']}). Using hardcoded default.")
+                    system_prompt_content = "You are a helpful AI assistant. Your primary goal is to complete the given task using available tools."
+
+            task_desc_content = self.env_entry["status"].task_description
+            if not task_desc_content: # Fallback for task_description if it somehow ended up empty
+                self.logger.warning(f"Task description is empty for DeepResearchEnv (env_id: {env_output['env_id']}). Using default.")
+                task_desc_content = "Please complete the assigned research task."
 
             messages = [
                 {"role": "system", "content": system_prompt_content},
                 # The task_description is the first user message.
-                # It's already in history as the first 'state'.
+                # It's already in history as the first 'state' if using the old logic for next_state in reset.
+                # With the new reset logic, task_description is passed to env, and also set in status.
+                # The history will start with the actual task description as the first 'state'.
                 # So, the loop below will pick it up.
                 # No, the first history item for DeepResearchEnv is the task_description (as 'state').
                 # The _format_messages logic should construct the initial user message from task_desc_content

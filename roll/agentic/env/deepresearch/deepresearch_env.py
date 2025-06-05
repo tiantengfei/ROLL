@@ -398,6 +398,13 @@ class DeepResearchEnv(BaseLanguageBasedEnv):
         initial_obs_string = self.tool_executor.get_initial_observation()
         return {"initial_observation": initial_obs_string, "task_description": actual_task_desc}
 
+    def get_system_prompt(self) -> Optional[str]:
+        """Returns the system prompt from the active tool executor, if available."""
+        if self.tool_executor and hasattr(self.tool_executor, 'system_prompt_value'):
+            return self.tool_executor.system_prompt_value
+        logging.warning("[DeepResearchEnv.get_system_prompt] Tool executor not initialized or does not have system_prompt_value.")
+        return None
+
     def render(self, mode: str = "text") -> str:
         if self.tool_executor:
             return self.tool_executor.get_current_observation()
