@@ -4,12 +4,12 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple, Type, Mapping
 
 # Imports needed for the full LocalToolExecutor
-from ..tools.base import BaseTool # Added
-from ..tools.python_execute import PythonExecute # Added
-from ..tools.terminate import Terminate # Added
-from ..tools.ask_human import AskHuman # Added
-from ..tools.str_replace_editor import StrReplaceEditor, ToolError as EditorToolError # Added
-from ..tools.browser_use_tool_wrapper import BrowserUseToolWrapper, ToolError as BrowserToolError # Added
+from .tools.base import BaseTool # Changed path
+from .tools.python_execute import PythonExecute # Changed path
+from .tools.terminate import Terminate # Changed path
+from .tools.ask_human import AskHuman # Changed path
+from .tools.str_replace_editor import StrReplaceEditor, ToolError as EditorToolError # Changed path
+from .tools.browser_use_tool_wrapper import BrowserUseToolWrapper, ToolError as BrowserToolError # Changed path
 
 
 # Assuming BaseLanguageBasedEnv and BaseTask are structured like this:
