@@ -1,5 +1,6 @@
 import copy
 import re
+import json # Added import
 from dataclasses import dataclass, field, asdict
 from itertools import zip_longest
 from threading import Thread
@@ -790,114 +791,84 @@ class EnvironmentWorker(Worker):
         self.env_config_lookup = env_config_lookup
 
     def _parse_response(self, response: str) -> Tuple[str, List[str]]:
-        # 1. Attempt to parse a <tool_call>
-        tool_call_match = re.search(r"<tool_call>(.*?)</tool_call>", response, re.DOTALL)
-        if tool_call_match:
-            action_content_json = tool_call_match.group(1).strip()
-            actions = [action_content_json]  # The JSON string for the tool is the action
-            llm_response_for_history = response # Preserve the raw response with <tool_call> tags
-            return llm_response_for_history, actions
+        actions: List[str] = []
+        llm_response_for_history: str = response # Default: raw response for history
 
-        # 2. If no <tool_call> is found, fall back to existing <think>/<answer> logic
-        think_content = ""
-        action_content = ""
-        actions = []
-        llm_response_for_history = response # Default to raw response if no valid structure is found later
+        # Determine if the current environment is DeepResearchEnv
+        is_deepresearch_env = (hasattr(self, 'env_entry') and self.env_entry and self.env_entry.get("tag") == "DeepResearchEnv")
 
-        pattern = (
-            r"<think>(.*?)</think>\s*<answer>(.*?)</answer>"
-            if self.pipeline_config.enable_think
-            else r"<answer>(.*?)</answer>"
-        )
-        answer_match = re.search(pattern, response, re.DOTALL)
-
-        if answer_match:
-            if self.pipeline_config.enable_think:
-                think_content = answer_match.group(1)
-                action_content = answer_match.group(2)
-            else:
-                think_content = "" # Should already be empty if enable_think is false
-                action_content = answer_match.group(1)
-
-            # Strip special tokens
-            for special_token in self.pipeline_config.special_token_list:
-                action_content = action_content.replace(special_token, "").strip()
-                if self.pipeline_config.enable_think:
-                    think_content = think_content.replace(special_token, "").strip()
-
-            raw_actions = [
-                action.strip() for action in action_content.split(self.pipeline_config.action_sep) if action.strip()
-            ]
-
-            max_actions = 1 # Assuming DeepResearchEnv and other action-oriented envs expect one action string
-
-            if len(raw_actions) > 0:
-                actions = raw_actions[:max_actions]
-                # Reconstruct action_content if it was truncated due to max_actions
-                # This is important if llm_response_for_history is built from processed parts.
-                processed_action_content = (" " + self.pipeline_config.action_sep + " ").join(actions)
-            else:
-                actions = []
-                processed_action_content = "" # Or "INVALID" if no actions found but answer tag was present
-
-            # Reconstruct llm_response for history from processed parts
-            if self.pipeline_config.enable_think:
-                llm_response_for_history = f"<think>{think_content}</think><answer>{processed_action_content}</answer>"
-            else:
-                llm_response_for_history = f"<answer>{processed_action_content}</answer>"
-
-            # If after processing, action_content is empty, it might be considered invalid for some logic,
-            # but we return the reconstructed response and actions (which might be empty list).
-            # If actions list is empty here, it implies the <answer> tag was empty or contained only separators/special tokens.
-
+        if is_deepresearch_env:
+            # DeepResearchEnv: Expects <tool_call> tags for actions, multiple calls possible.
+            # Narrative is anything outside these tags. llm_response_for_history remains raw.
+            tool_call_contents = re.findall(r"<tool_call>(.*?)</tool_call>", response, re.DOTALL)
+            if tool_call_contents:
+                cleaned_tool_calls = [tc.strip() for tc in tool_call_contents if tc.strip()] # Ensure content is not just whitespace
+                if cleaned_tool_calls: # Ensure list is not empty after stripping and filtering
+                    actions = [json.dumps(cleaned_tool_calls)] # Serialize list of tool calls
+            # If no tool_call_contents or if all were empty strings, actions remains []
+            # llm_response_for_history is already set to the raw response
         else:
-            # 3. If neither <tool_call> nor a valid <answer> structure is found
-            # This is the path if no <tool_call> was matched, and no <answer> pattern was matched.
-            actions = []
-            llm_response_for_history = response # The raw response, which is narrative or unhandled.
-            return llm_response_for_history, actions
+            # Logic for other environments (prioritize single <tool_call>, then <answer>)
+            tool_call_match = re.search(r"<tool_call>(.*?)</tool_call>", response, re.DOTALL)
+            if tool_call_match:
+                action_content = tool_call_match.group(1).strip()
+                if action_content: # Ensure extracted content is not empty
+                    actions = [action_content]
+                # llm_response_for_history is already set to the raw response
+            else:
+                # Try to parse <answer> tags if no <tool_call> was found
+                think_pattern = r"<think>(.*?)</think>\s*<answer>(.*?)</answer>"
+                answer_pattern = r"<answer>(.*?)</answer>"
 
-        # This return was part of the if answer_match block, ensuring it's correctly placed.
-        # If answer_match was true, it would have returned inside that block.
-        # If execution reaches here, it means answer_match was false, so the fallback above should have executed.
-        # The structure implies this final return is now part of the answer_match success path.
-        # Let's verify the original logic:
-        # if tool_call_match: return ...
-        # # if here, no tool_call
-        # if answer_match:
-        #    ...
-        #    return llm_response_for_history, actions <--- THIS IS THE CORRECT RETURN FOR THIS BLOCK
-        # else: # no answer_match either
-        #    actions = []
-        #    llm_response_for_history = response
-        #    return llm_response_for_history, actions <--- THIS IS THE CORRECT RETURN FOR THIS BLOCK
-        # The previous version had the "INVALID" construction and then a single return.
-        # The new structure ensures the correct return for each path.
-        # The `return llm_response_for_history, actions` for the answer_match block should be inside its `if` block.
-        # The provided diff has the `return` for the `answer_match` block outside and after the `else`.
-        # This needs to be structured correctly.
+                match = None
+                think_content_for_history = ""
 
-        # Corrected structure for clarity based on the prompt:
-        # if tool_call_match:
-        #   ...
-        #   return llm_response_for_history, actions
-        #
-        # # Fallback to <think>/<answer>
-        # ...
-        # if answer_match:
-        #   ...
-        #   return llm_response_for_history, actions
-        # else: # Neither <tool_call> nor <answer>
-        #   actions = []
-        #   llm_response_for_history = response
-        #   return llm_response_for_history, actions
+                if self.pipeline_config.enable_think:
+                    match = re.search(think_pattern, response, re.DOTALL)
+                    if match:
+                        think_content_for_history = match.group(1).strip() # Assign only if enable_think and think_pattern matched
 
-        # The current code has the `return llm_response_for_history, actions` at the end of the
-        # `if answer_match:` block. This is correct for that path.
-        # The `else` block for "neither found" correctly has its own return.
-        # So the change is only within the `else` block as requested.
+                if not match:
+                    match = re.search(answer_pattern, response, re.DOTALL)
 
-        return llm_response_for_history, actions # This line is actually part of the `if answer_match:` block
+                if match:
+                    action_content_from_match = ""
+                    if self.pipeline_config.enable_think and len(match.groups()) == 2 and think_content_for_history: # Matched think_pattern and think_content was captured
+                        action_content_from_match = match.group(2).strip()
+                    elif not self.pipeline_config.enable_think and len(match.groups()) == 1: # Matched answer_pattern (and think disabled)
+                        action_content_from_match = match.group(1).strip()
+                    elif len(match.groups()) == 1 and not think_content_for_history : # Fallback if only answer part of think_pattern matched or answer_pattern itself
+                         action_content_from_match = match.group(1).strip()
+
+
+                    # Strip special tokens from captured contents for history reconstruction
+                    temp_action_content = action_content_from_match
+                    for special_token in self.pipeline_config.special_token_list:
+                        temp_action_content = temp_action_content.replace(special_token, "").strip()
+                        if self.pipeline_config.enable_think and think_content_for_history:
+                            think_content_for_history = think_content_for_history.replace(special_token, "").strip()
+
+                    parsed_actions_list = [act.strip() for act in temp_action_content.split(self.pipeline_config.action_sep) if act.strip()]
+
+                    max_actions = 1
+
+                    processed_action_content_for_history = ""
+                    if parsed_actions_list:
+                        actions = parsed_actions_list[:max_actions]
+                        processed_action_content_for_history = (" " + self.pipeline_config.action_sep + " ").join(actions)
+                    else:
+                        actions = []
+                        # processed_action_content_for_history remains "" if answer tag was empty or yielded no actions
+
+                    # Reconstruct llm_response_for_history for <answer> cases
+                    if self.pipeline_config.enable_think: # Use the potentially stripped think_content_for_history
+                        llm_response_for_history = f"<think>{think_content_for_history}</think><answer>{processed_action_content_for_history}</answer>"
+                    else:
+                        llm_response_for_history = f"<answer>{processed_action_content_for_history}</answer>"
+                # else: No <tool_call> and no <answer> found for non-DeepResearch env.
+                # llm_response_for_history remains raw response, actions remains []. This is correct.
+
+        return llm_response_for_history, actions
 
     def start_input_queue_process(self):
         def process_input_queue(input_queue):

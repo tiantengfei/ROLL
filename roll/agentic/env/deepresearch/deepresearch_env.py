@@ -414,33 +414,39 @@ class DeepResearchEnv(BaseLanguageBasedEnv):
                 {"error": error_msg, "status": "failure"}
             )
 
+        actions_to_execute: List[str] = []
+        if action and action.strip(): # Check if action string is not None or empty/whitespace
+            try:
+                parsed_json = json.loads(action)
+                if isinstance(parsed_json, list):
+                    # Further validation: ensure all elements in the list are strings
+                    if all(isinstance(item, str) for item in parsed_json):
+                        actions_to_execute = parsed_json
+                    else:
+                        logging.warning(f"[DeepResearchEnv.step] Parsed action JSON is a list, but not all items are strings: {action[:200]}")
+                        # actions_to_execute remains []
+                else:
+                    logging.warning(f"[DeepResearchEnv.step] Parsed action JSON is not a list: {action[:200]}")
+                    # actions_to_execute remains []
+            except json.JSONDecodeError:
+                logging.warning(f"[DeepResearchEnv.step] Failed to decode action string as JSON. Treating as no-op/narrative: {action[:200]}")
+                # actions_to_execute remains []
+        else:
+            logging.info("[DeepResearchEnv.step] Received empty or null action string. No actions to execute.")
+            # actions_to_execute remains []
+
         try:
-            # Attempt to run process_action. If already in a loop, ensure_future might be better
-            # depending on LocalToolExecutor.process_action's design.
-            # For simplicity with `asyncio.run` if it's a common way tools are called:
+            # Attempt to run process_action.
             try:
                 loop = asyncio.get_running_loop()
                 # If in an event loop, we can't just call asyncio.run().
-                # This part is tricky without knowing how LocalToolExecutor is structured
-                # or how this env is typically used (e.g. with RL libraries).
-                # A common pattern for async methods called from sync code is to run them in a separate thread's loop
-                # or use something like `nest_asyncio`.
-                # For this example, let's assume process_action can be run like this,
-                # but in a real scenario, it might need `loop.run_until_complete(self.tool_executor.process_action([action]))`
-                # if called from a thread that doesn't own the loop, or more complex handling.
-                # Given the original `asyncio.run`, we'll stick to that and catch RuntimeError.
-                future = asyncio.ensure_future(self.tool_executor.process_action([action]))
-                # This is a simplified way to wait if we must block for the result in a sync step method.
-                # A better approach in truly async environments would be `await self.tool_executor.process_action([action])`
-                # in an `async def step`.
-                # For now, we assume step is synchronous as per typical Gym-like envs.
-                # This will block if called from outside an event loop.
-                # If called from within an event loop, ensure_future + await or loop.run_until_complete is needed.
-                # Let's assume for now `asyncio.run` is okay or we handle the RuntimeError.
-                asyncio.run(future) # This is problematic if already in a loop.
+                # This part is tricky. For now, we assume ensure_future is part of the solution
+                # if the environment's step method is itself called from an async context that manages the loop.
+                # If step is called synchronously, asyncio.run() is the way to run an async method.
+                future = asyncio.ensure_future(self.tool_executor.process_action(actions_to_execute))
+                asyncio.run(future)
             except RuntimeError as e:
                 if "cannot call run() while another loop is running" in str(e):
-                    # This is a common issue. A more robust solution is needed here.
                     # For now, we'll log and re-raise or handle gracefully.
                     logging.warning(f"Asyncio RuntimeError in step: {e}. This needs careful handling.")
                     # If we need to proceed, we'd need a way to run the async code.
