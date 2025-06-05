@@ -116,7 +116,7 @@ custom_envs:
     env_type: deepresearch
     max_actions_per_traj: ${{max_actions_per_traj}}
     max_steps_per_traj: ${{max_actions_per_traj}}
-    env_instruction: "You are an AI assistant. Complete the research task using the provided tools. Parse instructions carefully and use tools like web browser, python interpreter, etc. to find information or perform actions. Respond with tool calls in the specified JSON format."
+    env_instruction: "You are an AI assistant. Complete the research task... (Fallback if task_description_file is missing or fails to load)" # Clarified fallback role
     max_tokens: 1024 # Max tokens for the prompt/initial observation for DeepResearch
     env_config:
       max_steps: ${{max_actions_per_traj}}
@@ -124,7 +124,7 @@ custom_envs:
       reward_success: 1.0
       reward_failure: -0.5
       reward_timeout: -1.0
-      task_description_file: "placeholder/path/to_deepresearch_task.txt" # New line
+      task_description_file: "placeholder/path/to_deepresearch_tasks.json" # Updated path and extension
       # Example of how tool configs could be passed if DeepResearchEnvConfig supported them directly
       # and LocalToolExecutor used them from its main config dict:
       # browser_tool_config: {{ "type": "playwright", "headless": True }}
