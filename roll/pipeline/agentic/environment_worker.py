@@ -789,46 +789,78 @@ class EnvironmentWorker(Worker):
         self.prefix_lookup = prefix_lookup
         self.env_config_lookup = env_config_lookup
 
-    def _parse_response(self, response: str) -> List:
+    def _parse_response(self, response: str) -> Tuple[str, List[str]]:
+        # 1. Attempt to parse a <tool_call>
+        tool_call_match = re.search(r"<tool_call>(.*?)</tool_call>", response, re.DOTALL)
+        if tool_call_match:
+            action_content_json = tool_call_match.group(1).strip()
+            actions = [action_content_json]  # The JSON string for the tool is the action
+            llm_response_for_history = response # Preserve the raw response with <tool_call> tags
+            return llm_response_for_history, actions
+
+        # 2. If no <tool_call> is found, fall back to existing <think>/<answer> logic
+        think_content = ""
+        action_content = ""
+        actions = []
+        llm_response_for_history = response # Default to raw response if no valid structure is found later
+
         pattern = (
             r"<think>(.*?)</think>\s*<answer>(.*?)</answer>"
             if self.pipeline_config.enable_think
             else r"<answer>(.*?)</answer>"
         )
-        match = re.search(pattern, response, re.DOTALL)
-        if not match:
-            think_content, action_content, actions = (
-                "INVALID",
-                "INVALID",
-                [],
-            )  # do not remove this kind of invalid string
-            # yali: this may be cause potential crash
-            # llm_response, actions = response, []
-        else:
-            if self.pipeline_config.enable_think:
-                think_content, action_content = match.group(1), match.group(2)
-            else:
-                think_content, action_content = "", match.group(1)
+        answer_match = re.search(pattern, response, re.DOTALL)
 
+        if answer_match:
+            if self.pipeline_config.enable_think:
+                think_content = answer_match.group(1)
+                action_content = answer_match.group(2)
+            else:
+                think_content = "" # Should already be empty if enable_think is false
+                action_content = answer_match.group(1)
+
+            # Strip special tokens
             for special_token in self.pipeline_config.special_token_list:
                 action_content = action_content.replace(special_token, "").strip()
-                think_content = think_content.replace(special_token, "").strip()
+                if self.pipeline_config.enable_think:
+                    think_content = think_content.replace(special_token, "").strip()
 
-            actions = [
+            raw_actions = [
                 action.strip() for action in action_content.split(self.pipeline_config.action_sep) if action.strip()
             ]
-            max_actions = 1
 
-            if len(actions) > max_actions:
-                actions = actions[:max_actions]  # Only the first MAX_ACTIONS actions are kept in the rollout.
-                action_content = (" " + self.pipeline_config.action_sep + " ").join(actions)
+            max_actions = 1 # Assuming DeepResearchEnv and other action-oriented envs expect one action string
 
-        llm_response = (
-            f"<think>{think_content}</think><answer>{action_content}</answer>"
-            if self.pipeline_config.enable_think
-            else f"<answer>{action_content}</answer>"
-        )
-        return llm_response, actions
+            if len(raw_actions) > 0:
+                actions = raw_actions[:max_actions]
+                # Reconstruct action_content if it was truncated due to max_actions
+                # This is important if llm_response_for_history is built from processed parts.
+                processed_action_content = (" " + self.pipeline_config.action_sep + " ").join(actions)
+            else:
+                actions = []
+                processed_action_content = "" # Or "INVALID" if no actions found but answer tag was present
+
+            # Reconstruct llm_response for history from processed parts
+            if self.pipeline_config.enable_think:
+                llm_response_for_history = f"<think>{think_content}</think><answer>{processed_action_content}</answer>"
+            else:
+                llm_response_for_history = f"<answer>{processed_action_content}</answer>"
+
+            # If after processing, action_content is empty, it might be considered invalid for some logic,
+            # but we return the reconstructed response and actions (which might be empty list).
+            # If actions list is empty here, it implies the <answer> tag was empty or contained only separators/special tokens.
+
+        else:
+            # 3. If neither <tool_call> nor a valid <answer> structure is found
+            actions = []
+            think_content = "INVALID" if self.pipeline_config.enable_think else ""
+            action_content = "INVALID"
+            if self.pipeline_config.enable_think:
+                llm_response_for_history = f"<think>{think_content}</think><answer>{action_content}</answer>"
+            else:
+                llm_response_for_history = f"<answer>{action_content}</answer>"
+
+        return llm_response_for_history, actions
 
     def start_input_queue_process(self):
         def process_input_queue(input_queue):
