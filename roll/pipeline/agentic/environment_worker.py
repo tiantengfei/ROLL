@@ -852,15 +852,52 @@ class EnvironmentWorker(Worker):
 
         else:
             # 3. If neither <tool_call> nor a valid <answer> structure is found
+            # This is the path if no <tool_call> was matched, and no <answer> pattern was matched.
             actions = []
-            think_content = "INVALID" if self.pipeline_config.enable_think else ""
-            action_content = "INVALID"
-            if self.pipeline_config.enable_think:
-                llm_response_for_history = f"<think>{think_content}</think><answer>{action_content}</answer>"
-            else:
-                llm_response_for_history = f"<answer>{action_content}</answer>"
+            llm_response_for_history = response # The raw response, which is narrative or unhandled.
+            return llm_response_for_history, actions
 
-        return llm_response_for_history, actions
+        # This return was part of the if answer_match block, ensuring it's correctly placed.
+        # If answer_match was true, it would have returned inside that block.
+        # If execution reaches here, it means answer_match was false, so the fallback above should have executed.
+        # The structure implies this final return is now part of the answer_match success path.
+        # Let's verify the original logic:
+        # if tool_call_match: return ...
+        # # if here, no tool_call
+        # if answer_match:
+        #    ...
+        #    return llm_response_for_history, actions <--- THIS IS THE CORRECT RETURN FOR THIS BLOCK
+        # else: # no answer_match either
+        #    actions = []
+        #    llm_response_for_history = response
+        #    return llm_response_for_history, actions <--- THIS IS THE CORRECT RETURN FOR THIS BLOCK
+        # The previous version had the "INVALID" construction and then a single return.
+        # The new structure ensures the correct return for each path.
+        # The `return llm_response_for_history, actions` for the answer_match block should be inside its `if` block.
+        # The provided diff has the `return` for the `answer_match` block outside and after the `else`.
+        # This needs to be structured correctly.
+
+        # Corrected structure for clarity based on the prompt:
+        # if tool_call_match:
+        #   ...
+        #   return llm_response_for_history, actions
+        #
+        # # Fallback to <think>/<answer>
+        # ...
+        # if answer_match:
+        #   ...
+        #   return llm_response_for_history, actions
+        # else: # Neither <tool_call> nor <answer>
+        #   actions = []
+        #   llm_response_for_history = response
+        #   return llm_response_for_history, actions
+
+        # The current code has the `return llm_response_for_history, actions` at the end of the
+        # `if answer_match:` block. This is correct for that path.
+        # The `else` block for "neither found" correctly has its own return.
+        # So the change is only within the `else` block as requested.
+
+        return llm_response_for_history, actions # This line is actually part of the `if answer_match:` block
 
     def start_input_queue_process(self):
         def process_input_queue(input_queue):
