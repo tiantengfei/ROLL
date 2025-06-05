@@ -190,18 +190,27 @@ class LocalToolExecutor:
             tool_name = "UnknownTool"
             args_for_log = {}
             tool_executed_successfully_item = False
-            # formatted_action_observation = "" # This variable was defined but not always used before append.
+
+            processed_action_json_string = action_json_string.strip()
+            original_action_for_error_msg = processed_action_json_string # Save for error messages
+
+            if processed_action_json_string.startswith("<tool_call>") and processed_action_json_string.endswith("</tool_call>"):
+                content_start_index = processed_action_json_string.find(">") + 1
+                content_end_index = processed_action_json_string.rfind("<")
+                if content_start_index < content_end_index: # Basic check
+                    processed_action_json_string = processed_action_json_string[content_start_index:content_end_index].strip()
 
             try:
-                action_item = json.loads(action_json_string)
+                action_item = json.loads(processed_action_json_string)
                 if not isinstance(action_item, dict):
-                    raise ToolError(f"Parsed action is not a dictionary. Action string: '{action_json_string}'")
+                    # Use original_action_for_error_msg here if processed_action_json_string is the result of extraction
+                    raise ToolError(f"Parsed action content is not a dictionary. Original action string part: '{processed_action_json_string}'")
 
                 tool_name = action_item.get("name")
                 if not tool_name:
-                    error_message = f"Error: Missing 'name' in action: {action_json_string}"
-                    observation_parts.append(f"{i+1}. {error_message}")
-                    self.latest_status_info = {"success": False, "message": "Missing 'name'."} # Changed from function_name
+                    error_message = f"Error: Missing 'name' in action content: {processed_action_json_string}"
+                    observation_parts.append(f"{i+1}. {error_message}") # This error is about malformed action, not a tool response yet
+                    self.latest_status_info = {"success": False, "message": "Missing 'name' in parsed action."}
                     continue
 
                 args = action_item.get("arguments")
@@ -217,7 +226,9 @@ class LocalToolExecutor:
                     tool_result = await tool.execute(**args)
                     tool_executed_successfully_item = True
                     self.latest_status_info = {"success": True, "message": f"Tool {tool_name} executed."}
-                    formatted_action_observation = f"{i+1}. {calling_tool_line}\n\nResult: {tool_result}"
+                    # Wrap successful tool execution in <tool_response>
+                    tool_output_narrative = f"Successfully executed tool {tool_name}.\nResult: {tool_result}"
+                    formatted_action_observation = f"<tool_response>\n{tool_output_narrative}\n</tool_response>"
                     observation_parts.append(formatted_action_observation)
 
                     if tool_name == self.terminate_tool.name:
@@ -227,39 +238,45 @@ class LocalToolExecutor:
                         break
                 else:
                     error_message = f"Unknown tool '{tool_name}'. Available tools: {', '.join(self.tools.keys())}"
-                    formatted_action_observation = f"{i+1}. {calling_tool_line}\n\nError: {error_message}"
+                    # This error is about an attempt to call a non-existent tool, so it's a kind of "tool response" to that attempt.
+                    error_message_details = f"Error: Attempted to call unknown tool '{tool_name}'."
+                    formatted_action_observation = f"<tool_response>\n{error_message_details}\n</tool_response>"
                     observation_parts.append(formatted_action_observation)
                     self.latest_status_info = {"success": False, "message": f"Unknown tool: {tool_name}."}
 
             except json.JSONDecodeError:
-                error_message = f"Could not parse action JSON: {action_json_string}"
+                error_message = f"Could not parse action JSON content: {processed_action_json_string}. Original string: {original_action_for_error_msg}"
+                # This error is about malformed action, not a direct tool response to a valid call attempt. Keep plain for now.
                 observation_parts.append(f"{i+1}. Error: {error_message}")
                 self.latest_status_info = {"success": False, "message": "Action JSON parsing error."}
                 continue
-            except ToolError as e:
+            except ToolError as e: # Covers missing function_name if not caught earlier, or other validation issues
                 error_message = str(e)
+                # This is a ToolError raised by our own validation, like non-dict parsed action. Keep plain.
                 if 'calling_tool_line' not in locals():
-                    calling_tool_line = f"Attempted call with malformed action: {action_json_string}"
-                formatted_action_observation = f"{i+1}. {calling_tool_line}\n\nError: {error_message}"
+                    calling_tool_line = f"Attempted call with malformed action: {original_action_for_error_msg}"
+                formatted_action_observation = f"{i+1}. {calling_tool_line}\n\nError: {error_message}" # Keep plain
                 observation_parts.append(formatted_action_observation)
                 self.latest_status_info = {"success": False, "message": f"Invalid action item: {error_message}"}
             except (BrowserToolError, EditorToolError) as e:
                 error_message = str(e)
-                # Ensure calling_tool_line is defined if error happens early
                 if 'calling_tool_line' not in locals(): calling_tool_line = f"Calling tool {tool_name} (args: {args_for_log})"
-                formatted_action_observation = f"{i+1}. {calling_tool_line}\n\nError: {error_message}"
+                error_message_details = f"Error executing tool {tool_name}: {error_message}"
+                formatted_action_observation = f"<tool_response>\n{error_message_details}\n</tool_response>"
                 observation_parts.append(formatted_action_observation)
                 self.latest_status_info = {"success": False, "message": f"Tool error with {tool_name}: {error_message}"}
-            except TypeError as e:
+            except TypeError as e: # Typically an issue with tool arguments
                 error_message = str(e)
                 if 'calling_tool_line' not in locals(): calling_tool_line = f"Calling tool {tool_name} (args: {args_for_log})"
-                formatted_action_observation = f"{i+1}. {calling_tool_line}\n\nError: Argument mismatch for tool {tool_name}. Details: {error_message}"
+                error_message_details = f"Error: Argument mismatch for tool {tool_name}. Details: {error_message}"
+                formatted_action_observation = f"<tool_response>\n{error_message_details}\n</tool_response>"
                 observation_parts.append(formatted_action_observation)
                 self.latest_status_info = {"success": False, "message": f"Tool argument mismatch for {tool_name}: {error_message}"}
-            except Exception as e:
+            except Exception as e: # Other unexpected errors during tool execution
                 error_message = str(e)
                 if 'calling_tool_line' not in locals(): calling_tool_line = f"Calling tool {tool_name} (args: {args_for_log})"
-                formatted_action_observation = f"{i+1}. {calling_tool_line}\n\nError: Unexpected error: {error_message}"
+                error_message_details = f"Error: Unexpected issue executing tool {tool_name}. Details: {error_message}"
+                formatted_action_observation = f"<tool_response>\n{error_message_details}\n</tool_response>"
                 observation_parts.append(formatted_action_observation)
                 self.latest_status_info = {"success": False, "message": f"Unexpected error with tool {tool_name}: {error_message}"}
 
@@ -360,9 +377,9 @@ class DeepResearchEnv(BaseLanguageBasedEnv):
             self.executor_config_dict["str_editor_workspace_root"] = self.config.str_editor_workspace_root
 
 
-    def reset(self, seed: Optional[int] = None, **kwargs: Any) -> str:
+    def reset(self, seed: Optional[int] = None, **kwargs: Any) -> Dict[str, str]: # Return type changed
 
-        task_description = kwargs.get("task_description", "Default research task.")
+        actual_task_desc = kwargs.get("task_description", "Default research task.") # Renamed for clarity
 
         if self.tool_executor:
             logging.info("Cleaning up previous LocalToolExecutor instance.")
@@ -374,12 +391,17 @@ class DeepResearchEnv(BaseLanguageBasedEnv):
                 asyncio.run(self.tool_executor.cleanup())
             self.tool_executor = None
 
-        # LocalToolExecutor expects a 'config' dictionary.
         self.tool_executor = LocalToolExecutor(
-            task_description=task_description,
-            config=self.executor_config_dict # Pass the dictionary
+            task_description=actual_task_desc, # Use actual_task_desc
+            config=self.executor_config_dict
         )
-        return self.tool_executor.get_initial_observation()
+        initial_obs_string = self.tool_executor.get_initial_observation()
+        return {"initial_observation": initial_obs_string, "task_description": actual_task_desc}
+
+    def render(self, mode: str = "text") -> str:
+        if self.tool_executor:
+            return self.tool_executor.get_current_observation()
+        return "Environment not yet reset or tool executor not initialized."
 
     def step(self, action: str) -> Tuple[Any, float, bool, Dict]:
         if not self.tool_executor:

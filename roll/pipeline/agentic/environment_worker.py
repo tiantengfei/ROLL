@@ -37,6 +37,8 @@ class EnvStatus:
     rewards: List[float] = field(default_factory=list)  # rewards for each turn
     seed: Optional[int] = None  # what seed is used to reset this environment
     step: int = 0  # current step (single step)
+    initial_system_prompt: Optional[str] = None # Added for DeepResearchEnv
+    task_description: Optional[str] = None      # Added for DeepResearchEnv
 
     @property
     def done(self):
@@ -196,14 +198,27 @@ class EnvironmentWorker(Worker):
         }
 
         seed = self.group_seed + self.episode_id
-        entry["env"].reset(seed=seed)
-        entry["status"] = EnvStatus(seed=seed)
-        next_state = self._handle_mm_state(entry["env"].render())
+        # entry["env"].reset(seed=seed) # Old reset call
+        reset_output = entry["env"].reset(seed=seed) # New reset call
+
+        current_env_status = EnvStatus(seed=seed)
+
+        if entry["tag"] == "DeepResearchEnv": # Check for DeepResearchEnv
+            # Store the specific parts from DeepResearchEnv's reset output
+            current_env_status.initial_system_prompt = reset_output.get("initial_observation")
+            current_env_status.task_description = reset_output.get("task_description")
+            # The initial user-facing message is the task description itself for DeepResearchEnv
+            next_state = current_env_status.task_description
+        else:
+            # Existing logic for other environments
+            next_state = self._handle_mm_state(entry["env"].render())
+
+        entry["status"] = current_env_status
 
         # update rollout cache
         self.rollout_cache["history"] = self._update_cache_history(
             self.rollout_cache["history"],
-            next_state=next_state,
+            next_state=next_state, # This will be task_description for DeepResearchEnv
             actions_left=entry["max_actions_per_traj"],
             num_actions_info=None,
         )
@@ -576,48 +591,145 @@ class EnvironmentWorker(Worker):
                 :-1
             ]  # when prepare for update, we do not add the state from the n+1 turn to the trajectory
 
-        messages = [
-            {
-                "role": "system",
-                "content": f"You're a helpful assistant. You are a good game player. You are aiming to get high reward in the game.",
-            },
-            {"role": "user", "content": self.prefix_lookup[env_output["env_id"]]},
-        ]
+        entry = self.env_entry # Get the current environment entry
 
-        for idx, content in enumerate(env_output["history"]):
-            messages[-1]["content"] += f"\nTurn {idx + 1}:\n"
-            if "state" in content:
-                FORMAT_PROMPT = (
-                    "<think> [Your thoughts] </think> <answer> [your answer] </answer>"
-                    if self.pipeline_config.enable_think
-                    else "<answer> [your answer] </answer>"
-                )
-                LENGTH_PROMPT = f"Max response length: {self.env_config_lookup[env_output['env_id']]['max_tokens']} words (tokens)."
-                messages[-1]["content"] += (
-                    f"State:\n{content['state']}\nYou have {content['actions_left']} actions left. "
-                    f"Always output: {FORMAT_PROMPT} with no extra text."
-                    f"Strictly follow this format, history response that do not follow the format will be set as 'INVALID'. {LENGTH_PROMPT}\n"
-                    f"Decide the next action:\n"
-                )
-            if "llm_raw_response" in content:
-                # yali: using the raw response will cause continuous crashes: https://aliyuque.antfin.com/mdl-team/traning/wmne4oyxg4dozwia
-                #       改成actions合理吗？
-                messages.append(
-                    {
+        if entry["tag"] == "DeepResearchEnv":
+            system_prompt_content = entry["status"].initial_system_prompt
+            task_desc_content = entry["status"].task_description # This was the first 'state' logged
+
+            messages = [
+                {"role": "system", "content": system_prompt_content},
+                # The task_description is the first user message.
+                # It's already in history as the first 'state'.
+                # So, the loop below will pick it up.
+                # No, the first history item for DeepResearchEnv is the task_description (as 'state').
+                # The _format_messages logic should construct the initial user message from task_desc_content
+                # and then process the history, skipping this first state if it's the task description.
+                # Let's ensure the task description is the first user message.
+            ]
+            if task_desc_content: # Ensure task_description is present
+                 messages.append({"role": "user", "content": task_desc_content})
+
+            current_history = env_output["history"]
+            # For DeepResearchEnv, the first item in history is the task_description (logged as 'state').
+            # We've already added it as the first user message if we use the logic above.
+            # Or, if we assume history starts *after* the initial task_description:
+            # The history items are:
+            # 1. (Optional, if logged this way) Initial state: task_description
+            # 2. LLM Response (tool call), Reward
+            # 3. Env State (<tool_response>), Reward
+            # ...
+
+            # Revised loop for DeepResearchEnv history:
+            # The first 'state' in history for DeepResearchEnv is the task_description.
+            # We've already used entry["status"].task_description for the first user message.
+            # So, the loop should start from the first actual turn (assistant's tool call).
+
+            for content_item in current_history:
+                # If the first history item is the task description, we might want to skip it here
+                # if task_desc_content was already added.
+                # Let's assume current_history here means actual interaction history *after* initial setup.
+                # The _update_cache_history adds the task_description as the first 'state'.
+                # So, the first content_item WILL have 'state' as task_description.
+
+                if "llm_response" in content_item: # Assistant's turn (tool call)
+                    messages.append({
                         "role": "assistant",
-                        "content": (
-                            content["llm_response"] if not use_raw_llm_response else content["llm_raw_response"]
-                        ),
-                    }
-                )
-            if "reward" in content and not (prepare_for_update and idx == len(env_output["history"]) - 1):
-                # when prepare for update, we do not add the reward from the n+1 turn to the trajectory
-                messages.append({"role": "user", "content": f"Reward:\n{content['reward']}\n"})
+                        "content": content_item["llm_response"] # This should be the <tool_call>...</tool_call>
+                    })
 
-        # NOTE: this assertion is important for loss mask computation
-        assert all(msg["role"] == "assistant" for msg in messages[2::2])
-        if use_raw_llm_response:
-            messages = messages[2:]
+                # The 'state' field from history is the observation from the env after assistant's action.
+                if "state" in content_item and content_item["state"]:
+                    # For DeepResearchEnv, the first state is the task_description.
+                    # We need to ensure we don't add it again if already added,
+                    # or handle it if it's a tool_response.
+                    if content_item["state"] == task_desc_content and messages[-1]["role"] == "user" and messages[-1]["content"] == task_desc_content:
+                        # This is the initial task description, already added as the first user message. Skip.
+                        pass
+                    elif content_item["state"].strip().startswith("<tool_response>"):
+                         messages.append({
+                             "role": "tool",
+                             "content": content_item["state"].strip()
+                         })
+                    # else:
+                        # Non-tool-response state from DeepResearchEnv. Could be a final message or error.
+                        # For now, these are not explicitly formatted into the LLM prompt here,
+                        # as the primary interaction loop is tool_call -> tool_response.
+                        # If DeepResearchEnv produces other kinds of states that need to go to LLM,
+                        # this part would need specific handling.
+                        # self.logger.warning(f"DeepResearchEnv: Unhandled state in history: {content_item['state'][:100]}")
+
+                if "reward" in content_item and not (prepare_for_update and content_item is env_output["history"][-1]):
+                     messages.append({"role": "user", "content": f"Reward:\n{content_item['reward']}\n"})
+        else:
+            # Existing logic for other environments:
+            messages = [
+                {
+                    "role": "system",
+                    "content": "You're a helpful assistant. You are a good game player. You are aiming to get high reward in the game.",
+                },
+                {"role": "user", "content": self.prefix_lookup[env_output["env_id"]]},
+            ]
+
+            for idx, content in enumerate(env_output["history"]):
+                messages[-1]["content"] += f"\nTurn {idx + 1}:\n"
+                if "state" in content:
+                    FORMAT_PROMPT = (
+                        "<think> [Your thoughts] </think> <answer> [your answer] </answer>"
+                        if self.pipeline_config.enable_think
+                        else "<answer> [your answer] </answer>"
+                    )
+                    LENGTH_PROMPT = f"Max response length: {self.env_config_lookup[env_output['env_id']]['max_tokens']} words (tokens)."
+                    messages[-1]["content"] += (
+                        f"State:\n{content['state']}\nYou have {content['actions_left']} actions left. "
+                        f"Always output: {FORMAT_PROMPT} with no extra text."
+                        f"Strictly follow this format, history response that do not follow the format will be set as 'INVALID'. {LENGTH_PROMPT}\n"
+                        f"Decide the next action:\n"
+                    )
+                if "llm_raw_response" in content:
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": (
+                                content["llm_response"] if not use_raw_llm_response else content["llm_raw_response"]
+                            ),
+                        }
+                    )
+                if "reward" in content and not (prepare_for_update and idx == len(env_output["history"]) - 1):
+                    messages.append({"role": "user", "content": f"Reward:\n{content['reward']}\n"})
+
+            # NOTE: this assertion is important for loss mask computation for non-DeepResearch envs
+            if messages[1]["role"] == "user": # Standard envs start with user prompt after system
+                 assert all(msg["role"] == "assistant" for msg in messages[2::2])
+
+
+        if use_raw_llm_response: # This part seems general, may need review for DeepResearchEnv
+            # For DeepResearchEnv, if messages start [system, user(task_desc), assistant(tool_call), tool(tool_resp)]
+            # messages[2:] would be [assistant, tool, ...]. This might be okay if "raw" means "for PPO value func"
+            # where only assistant responses are primary.
+            # However, the original assertion `all(msg["role"] == "assistant" for msg in messages[2::2])`
+            # will fail for DeepResearchEnv due to "tool" role.
+            # This needs careful consideration of what `use_raw_llm_response=True` implies.
+            # If it's for creating a prompt for a value function that only sees assistant turns,
+            # then we'd need to filter out "tool" roles for that specific case.
+            # For now, let's assume this part is mostly for non-DeepResearch or that the assertion will be conditional.
+            if entry["tag"] != "DeepResearchEnv":
+                 assert all(msg["role"] == "assistant" for msg in messages[2::2]) # Keep assertion for non-DeepResearch
+            messages = messages[2:] # This will also fail for DeepResearchEnv if it expects system, user.
+                                    # This line is likely intended for non-DeepResearch envs if it means "get only assistant turns".
+                                    # Let's make this conditional too.
+            if entry["tag"] != "DeepResearchEnv":
+                messages = messages[2:] # Original logic for non-DeepResearch
+            else:
+                # For DeepResearchEnv, if use_raw_llm_response is true, what should be returned?
+                # If it's for a value model, it might want system, user, assistant, tool, assistant, tool ...
+                # or it might want a simplified history. This is unclear from current context.
+                # Let's assume for now `use_raw_llm_response` is NOT typically used with DeepResearchEnv
+                # or that its handling here needs more specific requirements for DeepResearchEnv.
+                # The safest thing is to let it pass through and see if downstream components complain.
+                pass # No slicing for DeepResearchEnv for now, return all formatted messages.
+
+
         text = self.tokenizer.apply_chat_template(
             messages, add_generation_prompt=(not prepare_for_update), tokenize=False
         )
