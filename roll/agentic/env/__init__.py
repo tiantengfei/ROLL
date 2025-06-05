@@ -12,6 +12,7 @@ from .sokoban.config import SokobanEnvConfig
 from .sokoban.env import SokobanEnv
 from .frozen_lake.config import FrozenLakeEnvConfig
 from .frozen_lake.env import FrozenLakeEnv
+from .deepresearch import DeepResearchEnv, DeepResearchTask, DeepResearchEnvConfig # Added
 # from .metamathqa.env import MetaMathQAEnv
 # from .metamathqa.config import MetaMathQAEnvConfig
 
@@ -21,6 +22,7 @@ REGISTERED_ENVS = {
     # "countdown": CountdownEnv,
     "sokoban": SokobanEnv,
     "frozen_lake": FrozenLakeEnv,
+    DeepResearchTask.env_name: DeepResearchEnv, # New line
     # 'alfworld': AlfredTXTEnv,
     # "metamathqa": MetaMathQAEnv,
 }
@@ -30,6 +32,7 @@ REGISTERED_ENV_CONFIGS = {
     # "countdown": CountdownEnvConfig,
     "sokoban": SokobanEnvConfig,
     "frozen_lake": FrozenLakeEnvConfig,
+    DeepResearchTask.env_name: DeepResearchEnvConfig, # New line
     # 'alfworld': AlfredEnvConfig,
     # "metamathqa": MetaMathQAEnvConfig,
 }
