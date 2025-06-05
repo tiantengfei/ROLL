@@ -1,4 +1,5 @@
 from roll.agentic.env.base import BaseEnvConfig
+from typing import Optional # Added import
 
 class DeepResearchEnvConfig(BaseEnvConfig):
     def __init__(
@@ -9,6 +10,7 @@ class DeepResearchEnvConfig(BaseEnvConfig):
         reward_failure: float = -0.5,
         reward_timeout: float = -1.0,
         invalid_act_score: float = 0.0, # From BaseEnvConfig, can be overridden
+        task_description_file: Optional[str] = None, # New field
         # Add any environment-specific configurations here, for example:
         # task_description: str = "Default task description",
         # browser_tool_config: dict = None, # Example for browser tool
@@ -22,6 +24,7 @@ class DeepResearchEnvConfig(BaseEnvConfig):
         self.reward_failure = reward_failure
         self.reward_timeout = reward_timeout
         self.invalid_act_score = invalid_act_score # Ensure this is set
+        self.task_description_file = task_description_file # New field assignment
 
         # Store other relevant configurations if any
         # self.task_description = task_description

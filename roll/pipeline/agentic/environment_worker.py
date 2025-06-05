@@ -1,6 +1,8 @@
 import copy
 import re
-import json # Added import
+import json
+import os # Added import
+import logging # Ensure logging is imported if self.logger is used extensively
 from dataclasses import dataclass, field, asdict
 from itertools import zip_longest
 from threading import Thread
@@ -199,8 +201,11 @@ class EnvironmentWorker(Worker):
         }
 
         seed = self.group_seed + self.episode_id
-        # entry["env"].reset(seed=seed) # Old reset call
-        reset_output = entry["env"].reset(seed=seed) # New reset call
+
+        # Retrieve the task description from the prefix_lookup
+        current_task_description = self.prefix_lookup[entry["env_id"]]
+
+        reset_output = entry["env"].reset(seed=seed, task_description=current_task_description) # Pass task_description
 
         current_env_status = EnvStatus(seed=seed)
 
@@ -745,32 +750,76 @@ class EnvironmentWorker(Worker):
         return [text], [messages]
 
     def _init_prefix_lookup(self):
-        # TODO: 这里并不合理
+        # TODO: 这里并不合理 -> This comment was from the original code.
         prefix_lookup = {}
-        prefixes = {}
-        env_config_lookup = {}
-        env_config = {}
-        for env_tag, env_config in self.pipeline_config.custom_envs.items():
+        prefixes = {} # This dict will store the final env instructions.
+        env_config_lookup_local = {} # Renamed to avoid confusion with self.env_config_lookup
+
+        for env_tag, env_config_from_yaml in self.pipeline_config.custom_envs.items():
             if env_tag not in self.worker_config.tags:
                 continue
-            env_config_new = asdict(REGISTERED_ENV_CONFIGS[env_config.env_type]())
-            env_config_new.update(env_config)
-            env_instruction = env_config_new.get("env_instruction", "")
+
+            # Create a base config dict from the registered default config for the env_type
+            default_config_obj = REGISTERED_ENV_CONFIGS[env_config_from_yaml.env_type]()
+            env_config_new = asdict(default_config_obj) # Convert default config object to dict
+
+            # Update with settings from YAML (env_config_from_yaml is a dict itself from OmegaConf)
+            # OmegaConf DictConfig needs to be handled carefully if it's not a plain dict here.
+            # Assuming env_config_from_yaml is effectively a dict here.
+            env_config_new.update(env_config_from_yaml)
+
+            # Get the base instruction, potentially from the YAML's "env_instruction" field
+            default_env_instruction = env_config_new.get("env_instruction", "")
+            final_env_instruction = default_env_instruction
+
+            if env_config_new.get("env_type") == "deepresearch":
+                actual_env_params = env_config_new.get("env_config", {}) # This is the sub-dict for DeepResearchEnvConfig fields
+                task_desc_file_path = actual_env_params.get("task_description_file")
+
+                if task_desc_file_path and isinstance(task_desc_file_path, str):
+                    self.logger.info(f"Attempting to load task description for '{env_tag}' from file: {task_desc_file_path}")
+                    try:
+                        # Security check: Ensure path is not absolute or trying to escape.
+                        # This is a simple check; for production, use a library or more robust validation.
+                        if os.path.isabs(task_desc_file_path) or ".." in task_desc_file_path:
+                             self.logger.error(f"Security risk: Task description file path for '{env_tag}' is absolute or contains '..': {task_desc_file_path}. Using YAML/default instruction.")
+                        else:
+                            with open(task_desc_file_path, "r", encoding="utf-8") as f:
+                                file_content = f.read().strip()
+                            if file_content:
+                                final_env_instruction = file_content
+                                self.logger.info(f"Successfully loaded task description for '{env_tag}' from {task_desc_file_path}.")
+                            else:
+                                self.logger.warning(f"Task description file '{task_desc_file_path}' for '{env_tag}' was empty. Using YAML/default instruction.")
+                    except FileNotFoundError:
+                        self.logger.warning(f"Task description file not found for '{env_tag}': {task_desc_file_path}. Using YAML/default instruction.")
+                    except Exception as e:
+                        self.logger.error(f"Error reading task description file '{task_desc_file_path}' for '{env_tag}': {e}. Using YAML/default instruction.")
+                else:
+                    self.logger.info(f"No task_description_file provided for DeepResearchEnv '{env_tag}'. Using instruction from YAML or default.")
+
+                if not final_env_instruction: # If still empty after file attempt or no file path
+                    final_env_instruction = "Default DeepResearch task: Explore a topic and provide a summary." # Default if nothing else is found
+                    self.logger.info(f"Using default hardcoded task description for DeepResearchEnv '{env_tag}'.")
+
+            # Append grid_vocab and action_lookup for non-DeepResearch envs, or if DeepResearch also uses them.
+            # Current logic implies these are generic.
+            # If these are specific to non-DeepResearch, add an `else` for the "deepresearch" check above.
+            # For now, assuming this augmentation can apply to final_env_instruction regardless of type if fields exist.
             if env_config_new.get("grid_vocab", False):
                 grid_vocab_str = "\nThe meaning of each symbol in the state is:\n" + ", ".join(
                     [f"{k}: {v}" for k, v in env_config_new["grid_vocab"].items()]
                 )
-                env_instruction += grid_vocab_str
+                final_env_instruction += grid_vocab_str # Append to final_env_instruction
             if env_config_new.get("action_lookup", False):
                 action_lookup_str = "\nYour available actions are:\n" + ", ".join(
                     [f"{v}" for k, v in env_config_new["action_lookup"].items()]
                 )
-                # one action per step
-                # action_lookup_str += f"\nYou can make up to {env_config_new['max_actions_per_traj']} actions, separated by the action separator \" " + self.action_sep + " \"\n"
-                env_instruction += action_lookup_str
-            prefixes[env_tag] = env_instruction
-            env_config_lookup[env_tag] = {
-                "max_tokens": env_config.get("max_tokens", self.pipeline_config.response_length)
+                final_env_instruction += action_lookup_str # Append to final_env_instruction
+
+            prefixes[env_tag] = final_env_instruction
+            env_config_lookup_local[env_tag] = { # Use local dict
+                "max_tokens": env_config_new.get("max_tokens", self.pipeline_config.response_length)
             }
 
         tags = self.worker_config.tags
@@ -779,16 +828,16 @@ class EnvironmentWorker(Worker):
 
         cur_group = 0
         for env_tag, n_group in zip(tags, n_groups):
-            env_instruction = prefixes[env_tag]
+            env_instruction_for_tag = prefixes[env_tag] # Use the final instruction
             start_idx = cur_group * group_size
             end_idx = (cur_group + n_group) * group_size
             for i in range(start_idx, end_idx):
-                prefix_lookup[i] = env_instruction
-                env_config_lookup[i] = env_config_lookup[env_tag]
+                prefix_lookup[i] = env_instruction_for_tag
+                env_config_lookup[i] = env_config_lookup_local[env_tag] # Use from local dict
             cur_group += n_group
 
         self.prefix_lookup = prefix_lookup
-        self.env_config_lookup = env_config_lookup
+        self.env_config_lookup = env_config_lookup # This was assigned to env_config_lookup_local
 
     def _parse_response(self, response: str) -> Tuple[str, List[str]]:
         actions: List[str] = []
