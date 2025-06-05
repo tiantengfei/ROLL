@@ -1,0 +1,152 @@
+defaults:
+  - ../config/envs@_here_
+  - ../config/deepspeed_zero@_here_
+  - ../config/deepspeed_zero2@_here_
+  - ../config/deepspeed_zero3@_here_
+  - ../config/deepspeed_zero3_cpuoffload@_here_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+exp_name: "agentic_pipeline_deepresearch" # Changed exp_name
+seed: 42
+logging_dir: ./output/logs_deepresearch # Changed logging_dir
+output_dir: ./output_deepresearch # Changed output_dir
+render_save_dir: /data/oss_bucket_0/yali/output/render_deepresearch # Changed
+system_envs:
+  USE_MODELSCOPE: '1'
+
+track_with: tensorboard
+tracker_kwargs:
+  log_dir: /data/oss_bucket_0/yali/llm/tensorboard/roll_exp/agentic_deepresearch # Changed log_dir
+
+num_gpus_per_node: 8
+
+max_steps: 1024
+save_steps: 10000
+logging_steps: 1
+eval_steps: 10
+resume_from_checkpoint: false
+
+rollout_batch_size: 512
+val_batch_size: 1024
+sequence_length: 8192
+
+reward_clip: 20
+advantage_clip: 10.0
+ppo_epochs: 1
+adv_estimator: "reinforce"
+init_kl_coef: 0.0
+whiten_advantages: true
+entropy_loss_coef: 0
+
+pretrain: Qwen/Qwen2.5-0.5B-Instruct
+reward_pretrain: Qwen/Qwen2.5-0.5B-Instruct
+
+actor_train:
+  model_args:
+    flash_attn: fa2
+    disable_gradient_checkpointing: false
+    dtype: bf16
+    model_type: ~
+  training_args:
+    learning_rate: 1.0e-6
+    weight_decay: 0
+    per_device_train_batch_size: 2
+    gradient_accumulation_steps: 32
+    warmup_steps: 10
+  data_args:
+    template: qwen2_5
+  strategy_args:
+    strategy_name: deepspeed_train
+    strategy_config: ${{deepspeed_zero2}} # Escaped for f-string if this script itself was in one
+  device_mapping: list(range(0,8))
+  infer_batch_size: 2
+
+actor_infer:
+  model_args:
+    flash_attn: fa2
+    disable_gradient_checkpointing: true
+    dtype: bf16
+  generating_args:
+    max_new_tokens: 256 # Increased for potentially longer research outputs
+    top_p: 0.99
+    top_k: 100
+    num_beams: 1
+    temperature: 0.99
+    num_return_sequences: 1
+  data_args:
+    template: qwen2_5
+  strategy_args:
+    strategy_name: vllm
+    strategy_config:
+      gpu_memory_utilization: 0.8
+      block_size: 16
+      load_format: auto
+  device_mapping: list(range(0,8))
+  infer_batch_size: 1
+
+reference:
+  model_args:
+    flash_attn: fa2
+    disable_gradient_checkpointing: true
+    dtype: bf16
+    model_type: ~
+  data_args:
+    template: qwen2_5
+  strategy_args:
+    strategy_name: hf_infer
+    strategy_config: ~
+  device_mapping: list(range(0,8))
+  infer_batch_size: 2
+
+enable_response_mask: True
+action_sep: "||"
+use_turn_scores: False
+enable_think: False
+max_actions_per_traj: 20 # This will be used as ${{max_actions_per_traj}}
+reward_normalization:
+  grouping: tags
+  method: identity
+
+custom_envs:
+  DeepResearchEnv: # Added new environment
+    env_type: deepresearch
+    max_actions_per_traj: ${{max_actions_per_traj}}
+    max_steps_per_traj: ${{max_actions_per_traj}}
+    env_instruction: "You are an AI assistant. Complete the research task using the provided tools. Parse instructions carefully and use tools like web browser, python interpreter, etc. to find information or perform actions. Respond with tool calls in the specified JSON format."
+    max_tokens: 1024 # Max tokens for the prompt/initial observation for DeepResearch
+    env_config:
+      max_steps: ${{max_actions_per_traj}}
+      reward_step: 0.0
+      reward_success: 1.0
+      reward_failure: -0.5
+      reward_timeout: -1.0
+      # Example of how tool configs could be passed if DeepResearchEnvConfig supported them directly
+      # and LocalToolExecutor used them from its main config dict:
+      # browser_tool_config: {{ "type": "playwright", "headless": True }}
+      # str_editor_workspace_root: "/tmp/my_research_agent_workspace"
+
+  FrozenLake: # Kept FrozenLake for comparison / completeness if needed
+    env_type: frozen_lake
+    max_actions_per_traj: ${{max_actions_per_traj}}
+    max_steps_per_traj: ${{max_actions_per_traj}}
+    env_instruction: "You are solving the FrozenLake puzzle. Forbid the whole and go to the target. You may move to the unintended direction due to the slippery ice. The answer must be one of action in a turn, format is <answer>Right</answer>"
+    max_tokens: 100
+    env_config:
+      is_slippery: false
+
+train_env_manager:
+  format_penalty: -0.001
+  env_groups: 64 # Total groups for training
+  group_size: 1
+  tags: [DeepResearchEnv] # Training only on DeepResearchEnv
+  n_groups: [64]
+
+val_env_manager:
+  env_groups: 32 # Total groups for validation
+  group_size: 1
+  tags: [DeepResearchEnv, FrozenLake] # Validate on DeepResearch and FrozenLake
+  n_groups: [16, 16] # Distribute validation groups
