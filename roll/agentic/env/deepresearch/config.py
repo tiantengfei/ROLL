@@ -1,5 +1,6 @@
 from roll.agentic.env.base import BaseEnvConfig
-from typing import Optional # Added import
+from typing import Optional
+from omegaconf import OmegaConf, DictConfig # Added import
 
 class DeepResearchEnvConfig(BaseEnvConfig):
     def __init__(
@@ -31,8 +32,14 @@ class DeepResearchEnvConfig(BaseEnvConfig):
         # self.browser_tool_config = browser_tool_config if browser_tool_config else {}
         # self.str_editor_workspace_root = str_editor_workspace_root
 
-        # Store any additional kwargs as attributes, if needed, or pass to a dict
-        self.additional_config = kwargs
+        # Process kwargs to convert OmegaConf DictConfig instances to standard dicts
+        processed_kwargs = {}
+        for key, value in kwargs.items():
+            if isinstance(value, DictConfig):
+                processed_kwargs[key] = OmegaConf.to_container(value, resolve=True)
+            else:
+                processed_kwargs[key] = value
+        self.additional_config = processed_kwargs
 
         # Ensure invalid_act is also part of the config, inherited from BaseEnvConfig
         # self.invalid_act = "" # Default, can be overridden by kwargs if necessary
