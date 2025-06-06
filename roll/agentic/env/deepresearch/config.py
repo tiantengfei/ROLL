@@ -1,45 +1,37 @@
+from dataclasses import dataclass # Added
+from typing import Optional # Keep Optional for task_description_file
+# Removed: from omegaconf import OmegaConf, DictConfig (no longer needed)
 from roll.agentic.env.base import BaseEnvConfig
-from typing import Optional
-from omegaconf import OmegaConf, DictConfig # Added import
 
+@dataclass
 class DeepResearchEnvConfig(BaseEnvConfig):
-    def __init__(
-        self,
-        max_steps: int = 20,
-        reward_step: float = 0.0,
-        reward_success: float = 1.0,
-        reward_failure: float = -0.5,
-        reward_timeout: float = -1.0,
-        invalid_act_score: float = 0.0, # From BaseEnvConfig, can be overridden
-        task_description_file: Optional[str] = None, # New field
-        # Add any environment-specific configurations here, for example:
-        # task_description: str = "Default task description",
-        # browser_tool_config: dict = None, # Example for browser tool
-        # str_editor_workspace_root: str = None, # Example for editor tool
-        **kwargs, # Allow additional keyword arguments
-    ):
+    # Fields from BaseEnvConfig (like invalid_act_score, invalid_act)
+    # will be initialized by super().__init__() in __post_init__.
+    # DeepResearchEnvConfig specific fields:
+    max_steps: int = 20
+    reward_step: float = 0.0
+    reward_success: float = 1.0
+    reward_failure: float = -0.5
+    reward_timeout: float = -1.0
+    # invalid_act_score is initialized in BaseEnvConfig. If DeepResearchEnvConfig
+    # needs a *different* default than BaseEnvConfig, it should be declared here.
+    # Since the old __init__ had `invalid_act_score: float = 0.0`, which matches
+    # BaseEnvConfig's default setting, we don't need to re-declare it here.
+    task_description_file: Optional[str] = None
+
+    # The 'additional_config' field and **kwargs processing are removed.
+    # If unknown fields are provided via YAML, Hydra/OmegaConf might still allow them
+    # at instantiation time if strict mode is not enabled for the dataclass,
+    # but they won't be part of the dataclass fields themselves.
+    # For asdict() to work correctly with only defined fields, this is the desired state.
+
+    def __post_init__(self):
         super().__init__()
-        self.max_steps = max_steps
-        self.reward_step = reward_step
-        self.reward_success = reward_success
-        self.reward_failure = reward_failure
-        self.reward_timeout = reward_timeout
-        self.invalid_act_score = invalid_act_score # Ensure this is set
-        self.task_description_file = task_description_file # New field assignment
-
-        # Store other relevant configurations if any
-        # self.task_description = task_description
-        # self.browser_tool_config = browser_tool_config if browser_tool_config else {}
-        # self.str_editor_workspace_root = str_editor_workspace_root
-
-        # Process kwargs to convert OmegaConf DictConfig instances to standard dicts
-        processed_kwargs = {}
-        for key, value in kwargs.items():
-            if isinstance(value, DictConfig):
-                processed_kwargs[key] = OmegaConf.to_container(value, resolve=True)
-            else:
-                processed_kwargs[key] = value
-        self.additional_config = processed_kwargs
-
-        # Ensure invalid_act is also part of the config, inherited from BaseEnvConfig
-        # self.invalid_act = "" # Default, can be overridden by kwargs if necessary
+        # If any specific logic was needed after BaseEnvConfig.__init__ and after
+        # dataclass fields are set, it would go here.
+        # For example, if `invalid_act_score` specific to DeepResearch needed
+        # to be different from BaseEnvConfig's default and wasn't overridden by YAML:
+        # if self.invalid_act_score == 0.0: # Default from BaseEnvConfig
+        #     self.invalid_act_score = -0.1 # Example: DeepResearch specific default
+        # However, based on the previous __init__, it used the same default as BaseEnvConfig.
+        pass
