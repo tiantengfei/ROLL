@@ -623,17 +623,22 @@ class EnvironmentWorker(Worker):
                 system_prompt_content = self.env_entry["env"].get_system_prompt()
 
             if not system_prompt_content: # Check if None or empty
-                self.logger.warning(f"Failed to get live system prompt for DeepResearchEnv (env_id: {env_output['env_id']}). Attempting fallback.")
-                if hasattr(self.env_entry["status"], 'initial_system_prompt'):
+                self.logger.warning(f"Failed to get live system prompt for DeepResearchEnv (env_id: {env_output.get('env_id', 'N/A')}). Attempting fallback.")
+                # Check attribute existence and content before assigning
+                if hasattr(self.env_entry["status"], 'initial_system_prompt') and self.env_entry["status"].initial_system_prompt:
                     system_prompt_content = self.env_entry["status"].initial_system_prompt
 
                 if not system_prompt_content: # Check again if None or empty
-                    self.logger.warning(f"Fallback system prompt also unavailable for DeepResearchEnv (env_id: {env_output['env_id']}). Using hardcoded default.")
+                    self.logger.warning(f"Fallback system prompt also unavailable for DeepResearchEnv (env_id: {env_output.get('env_id', 'N/A')}). Using hardcoded default.")
                     system_prompt_content = "You are a helpful AI assistant. Your primary goal is to complete the given task using available tools."
 
-            task_desc_content = self.env_entry["status"].task_description
+            task_desc_content = None
+            # Check attribute existence and content before assigning
+            if hasattr(self.env_entry["status"], 'task_description') and self.env_entry["status"].task_description:
+                task_desc_content = self.env_entry["status"].task_description
+
             if not task_desc_content: # Fallback for task_description if it somehow ended up empty
-                self.logger.warning(f"Task description is empty for DeepResearchEnv (env_id: {env_output['env_id']}). Using default.")
+                self.logger.warning(f"Task description is empty for DeepResearchEnv (env_id: {env_output.get('env_id', 'N/A')}). Using default.")
                 task_desc_content = "Please complete the assigned research task."
 
             messages = [
@@ -808,11 +813,14 @@ class EnvironmentWorker(Worker):
                 loaded_tasks_for_tag: List[str] = []
 
                 if task_desc_file_path and isinstance(task_desc_file_path, str):
-                    if os.path.isabs(task_desc_file_path) or ".." in task_desc_file_path:
+                    # Security check: only disallow '..' for path traversal
+                    if ".." in task_desc_file_path:
                         self.logger.warning(
-                            f"Security: Task description file path for '{env_tag}' ('{task_desc_file_path}') is absolute or contains '..'. Skipping file load."
+                            f"Task description file path for '{env_tag}' ('{task_desc_file_path}') contains '..'. Skipping file load for security reasons."
                         )
-                    else:
+                        task_desc_file_path = None # Set to None to prevent loading
+
+                    if task_desc_file_path: # Proceed if path is still valid after check
                         self.logger.info(f"Attempting to load tasks for DeepResearchEnv '{env_tag}' from file: {task_desc_file_path}")
                         try:
                             with open(task_desc_file_path, "r", encoding="utf-8") as f:
