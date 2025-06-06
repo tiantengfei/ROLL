@@ -880,18 +880,23 @@ class EnvironmentWorker(Worker):
         n_groups = self.worker_config.n_groups
         group_size = self.worker_config.group_size
 
+        # Initialize dictionaries for per-ID lookup BEFORE the loop
+        # prefix_lookup was already initialized at the top of the method.
+        # env_config_lookup needs to be initialized here.
+        env_config_lookup = {} # Initialize before use
+
         cur_group = 0
         for env_tag, n_group in zip(tags, n_groups):
             env_instruction_for_tag = prefixes[env_tag] # Use the final instruction
             start_idx = cur_group * group_size
             end_idx = (cur_group + n_group) * group_size
             for i in range(start_idx, end_idx):
-                prefix_lookup[i] = env_instruction_for_tag
-                env_config_lookup[i] = env_config_lookup_local[env_tag] # Use from local dict
+                prefix_lookup[i] = env_instruction_for_tag # prefix_lookup is already the per-ID map
+                env_config_lookup[i] = env_config_lookup_local[env_tag] # Assign to initialized per-ID map
             cur_group += n_group
 
         self.prefix_lookup = prefix_lookup
-        self.env_config_lookup = env_config_lookup # This was assigned to env_config_lookup_local
+        self.env_config_lookup = env_config_lookup
 
     def _parse_response(self, response: str) -> Tuple[str, List[str]]:
         actions: List[str] = []
