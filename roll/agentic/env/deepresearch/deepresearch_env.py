@@ -443,55 +443,55 @@ class DeepResearchEnv(BaseLanguageBasedEnv):
             # actions_to_execute remains []
 
         try:
-            # Attempt to run process_action.
-            try:
-                loop = asyncio.get_running_loop()
-                # If in an event loop, we can't just call asyncio.run().
-                # This part is tricky. For now, we assume ensure_future is part of the solution
-                # if the environment's step method is itself called from an async context that manages the loop.
-                # If step is called synchronously, asyncio.run() is the way to run an async method.
-                future = asyncio.ensure_future(self.tool_executor.process_action(actions_to_execute))
-                asyncio.run(future)
-            except RuntimeError as e:
-                if "cannot call run() while another loop is running" in str(e):
-                    # For now, we'll log and re-raise or handle gracefully.
-                    logging.warning(f"Asyncio RuntimeError in step: {e}. This needs careful handling.")
-                    # If we need to proceed, we'd need a way to run the async code.
-                    # For now, let's assume it implies an issue that stops the step.
-                    # This part is highly dependent on the execution context of the `step` method.
-                    # A placeholder for what might happen if an action can't be processed due to async issues:
-                    return (
-                        self.tool_executor.get_current_observation(), # Previous observation
-                        self.config.reward_failure, # Penalize
-                        True, # End episode
-                        {"error": "Async execution error in step", "status": "failure"}
-                    )
-                else:
-                    raise # Re-raise other RuntimeErrors
-            except ToolError as e:
-                logging.warning(f"ToolError during step: {e}")
-                # Observation, reward, done, info
-                observation = self.tool_executor.get_current_observation()
-                reward = self.tool_executor.get_reward() # Should reflect failure
-                done = self.tool_executor.is_done()
-                info = self.tool_executor.latest_status_info
-                info["error"] = str(e)
-                return observation, reward, done, info
+            # Directly use asyncio.run. It will create a new loop if none exists.
+            # If a loop is already running in the same thread, it will raise a RuntimeError,
+            # which should be caught by the specific RuntimeError handler below.
+            asyncio.run(self.tool_executor.process_action(actions_to_execute))
 
-
+            # If process_action completes without asyncio.run raising an error:
             observation = self.tool_executor.get_current_observation()
             reward = self.tool_executor.get_reward()
             done = self.tool_executor.is_done()
-            info = self.tool_executor.latest_status_info.copy() # Get a copy
+            info = self.tool_executor.latest_status_info.copy() if self.tool_executor.latest_status_info else {}
+
+            # Refine status in info
+            # If already done, status should ideally be set by tool_executor (e.g. success/failure/timeout)
+            # If not done, status is in_progress.
+            # If done and no status, set a generic "completed".
+            if done:
+                if "status" not in info or not info["status"]: # If no status or empty status
+                    # Check if it was a success based on reward (example heuristic)
+                    if reward > self.executor_config_dict.get("reward_step", 0.0) : # Assuming positive reward means success
+                        info["status"] = "completed_success"
+                    else:
+                        info["status"] = "completed_failure_or_timeout"
+            else: # Not done
+                info["status"] = "in_progress"
+
+        except RuntimeError as e:
+            # This will catch "asyncio.run() cannot be called from a running event loop"
+            # and other general runtime errors from asyncio.run or within process_action.
+            logging.error(f"[DeepResearchEnv.step] RuntimeError during step execution: {e}")
+            observation = "Error: Runtime error during step execution."
+            reward = self.executor_config_dict.get("reward_failure", -0.5) # Use configured failure reward
+            done = True # Terminate episode on such errors
+            info = {"status": "failure", "step_runtime_error": str(e)}
+
+        except ToolError as e:
+            logging.warning(f"[DeepResearchEnv.step] ToolError during step: {e}")
+            observation = self.tool_executor.get_current_observation()
+            reward = self.tool_executor.get_reward()
+            done = self.tool_executor.is_done()
+            info = self.tool_executor.latest_status_info.copy() if self.tool_executor.latest_status_info else {}
+            info["status"] = "failure" # Ensure status reflects tool error
+            info["tool_error_details"] = str(e) # Specific key for tool error
 
         except Exception as e:
-            logging.exception(f"Unexpected error during step: {e}")
-            return (
-                {"error": str(e)},
-                self.config.reward_failure,
-                True,
-                {"error": str(e), "status": "failure"}
-            )
+            logging.exception(f"[DeepResearchEnv.step] Unexpected critical error in step: {e}")
+            observation = "Error: Unexpected critical error in environment step."
+            reward = self.executor_config_dict.get("reward_failure", -0.5) # Use configured failure reward
+            done = True # Terminate episode
+            info = {"status": "failure", "step_critical_error": str(e)} # Specific key for critical error
 
         return observation, reward, done, info
 

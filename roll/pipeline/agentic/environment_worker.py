@@ -500,13 +500,35 @@ class EnvironmentWorker(Worker):
         }
         custom_metric = {}
 
+        known_string_info_keys = [
+            "step_execution_error",
+            "tool_error_details",
+            "step_critical_error",
+            "step_runtime_error",
+            "message", # Common key from LocalToolExecutor.latest_status_info
+            "error"    # Common key for errors (e.g. from DeepResearchEnv.step initial error return)
+            # Add other known string keys from info dicts if necessary
+        ]
+
         for turn in self.rollout_cache["history"]:
             for k, v in turn.get("info", {}).items():
-                if k == "success":
+                if k == "success" or k in known_string_info_keys: # Skip 'success' and known string fields
                     continue
+
                 if k not in custom_metric:
                     custom_metric[k] = []
-                custom_metric[k].append(float(v))
+
+                if isinstance(v, (int, float)):
+                    custom_metric[k].append(float(v))
+                elif isinstance(v, str):
+                    try:
+                        metric_val = float(v)
+                        custom_metric[k].append(metric_val)
+                    except ValueError:
+                        self.logger.debug(
+                            f"Info field '{k}' with string value '{v}' could not be converted to float. Skipping for custom_metric."
+                        )
+                # Other data types (like bool, list, dict) are implicitly skipped for custom_metric float aggregation
 
         for k, v in custom_metric.items():
             env_metric[k] = np.sum(v) / len(self.rollout_cache["history"])
