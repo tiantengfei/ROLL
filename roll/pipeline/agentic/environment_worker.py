@@ -631,7 +631,7 @@ class EnvironmentWorker(Worker):
         return status, history
 
     def _format_messages(self, env_output: Dict, prepare_for_update: bool, use_raw_llm_response: bool):
-        if "state" in env_output["history"][-1] and (not use_raw_llm_response and prepare_for_update):
+        if env_output["history"] and "state" in env_output["history"][-1] and (not use_raw_llm_response and prepare_for_update):
             env_output["history"] = env_output["history"][
                 :-1
             ]  # when prepare for update, we do not add the state from the n+1 turn to the trajectory
