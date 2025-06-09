@@ -7,7 +7,7 @@ import random # Added import
 from dataclasses import dataclass, field, asdict
 from itertools import zip_longest
 from threading import Thread
-from typing import Dict, List, Optional, Union, Tuple
+from typing import Dict, List, Optional, Union, Tuple, Any
 
 import PIL
 import numpy as np
