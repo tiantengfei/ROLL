@@ -192,13 +192,7 @@ class LocalToolExecutor:
             tool_executed_successfully_item = False
 
             processed_action_json_string = action_json_string.strip()
-            original_action_for_error_msg = processed_action_json_string # Save for error messages
-
-            if processed_action_json_string.startswith("<tool_call>") and processed_action_json_string.endswith("</tool_call>"):
-                content_start_index = processed_action_json_string.find(">") + 1
-                content_end_index = processed_action_json_string.rfind("<")
-                if content_start_index < content_end_index: # Basic check
-                    processed_action_json_string = processed_action_json_string[content_start_index:content_end_index].strip()
+            original_action_for_error_msg = processed_action_json_string # Still useful for error messages
 
             try:
                 action_item = json.loads(processed_action_json_string)

@@ -569,7 +569,14 @@ class EnvironmentWorker(Worker):
         for k, v in custom_metric.items():
             env_metric[k] = np.sum(v) / len(self.rollout_cache["history"])
 
-        self.rollout_cache["history"][-1]["metrics"] = custom_metric
+        if self.rollout_cache["history"]:
+            self.rollout_cache["history"][-1]["metrics"] = custom_metric
+        else:
+            self.logger.warning(
+                f"Rollout history is empty for env_id: {self.rollout_cache.get('env_id', 'N/A')}, "
+                f"tag: {self.rollout_cache.get('tag', 'N/A')}. "
+                f"Cannot assign custom_metric to the last history entry."
+            )
         env_metric = {f"env/{entry['tag']}/{k}": v for k, v in env_metric.items()}
         env_metric["env/response_length"] = response_length
         self.rollout_cache["metrics"] = env_metric
@@ -833,6 +840,17 @@ class EnvironmentWorker(Worker):
                 # The safest thing is to let it pass through and see if downstream components complain.
                 pass # No slicing for DeepResearchEnv for now, return all formatted messages.
 
+
+        if not messages:
+            self.logger.warning(
+                f"Message list became empty before applying chat template. "
+                f"Env_id: {env_output.get('env_id', 'N/A')}, "
+                f"Tag: {entry.get('tag', 'N/A')}, "
+                f"use_raw_llm_response: {use_raw_llm_response}, "
+                f"prepare_for_update: {prepare_for_update}. "
+                f"Returning empty formatted text and messages."
+            )
+            return [""], [[]] # Return empty text and an empty list of message lists
 
         text = self.tokenizer.apply_chat_template(
             messages, add_generation_prompt=(not prepare_for_update), tokenize=False
