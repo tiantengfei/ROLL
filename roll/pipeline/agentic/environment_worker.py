@@ -170,7 +170,7 @@ class EnvironmentWorker(Worker):
         self.prefix_lookup = None
         self.env_config_lookup = None
         self.tokenizer = None
-        self.deepresearch_task_lists: Dict[str, List[str]] = {} # New instance variable
+        self.deepresearch_tasks_by_split: Dict[str, Dict[str, List[str]]] = {}
 
     def initialize(self, pipeline_config, infer_worker, input_queue: Queue, output_queue: Queue, mode: str = "train"):
         super().initialize(pipeline_config)
@@ -209,15 +209,52 @@ class EnvironmentWorker(Worker):
         is_deepresearch_env = (entry.get("tag") == "DeepResearchEnv")
 
         if is_deepresearch_env:
-            task_list = self.deepresearch_task_lists.get(entry["tag"], [])
+            env_tag = entry.get("tag") # ensure env_tag is defined
+            tasks_for_tag = self.deepresearch_tasks_by_split.get(env_tag, {"train": [], "validation": []})
+            train_task_list = tasks_for_tag.get("train", [])
+            validation_task_list = tasks_for_tag.get("validation", [])
 
-            if task_list:
-                task_rng = random.Random(seed)
-                current_task_description = task_rng.choice(task_list)
-                self.logger.info(f"DeepResearchEnv (tag: {entry['tag']}, env_id: {entry['env_id']}) randomly selected task: '{current_task_description[:100]}...'")
+            relevant_task_list = []
+            selected_task_type_log = ""
+
+            if self.mode == "train":
+                relevant_task_list = train_task_list
+                selected_task_type_log = "train"
+                if not relevant_task_list:
+                    self.logger.warning(f"DeepResearchEnv (tag: {env_tag}, env_id: {entry['env_id']}, mode: {self.mode}) no 'train' tasks. Fallback to 'validation'.")
+                    relevant_task_list = validation_task_list
+                    selected_task_type_log = "train (fallback to validation)"
+            elif self.mode == "val" or self.mode == "eval":
+                relevant_task_list = validation_task_list
+                selected_task_type_log = self.mode
+                if not relevant_task_list:
+                    self.logger.warning(f"DeepResearchEnv (tag: {env_tag}, env_id: {entry['env_id']}, mode: {self.mode}) no '{selected_task_type_log}' tasks. Fallback to 'train'.")
+                    relevant_task_list = train_task_list
+                    selected_task_type_log = f"{self.mode} (fallback to train)"
             else:
-                current_task_description = self.prefix_lookup.get(entry["env_id"], "Default DeepResearch task if all lookups fail.")
-                self.logger.warning(f"DeepResearchEnv (tag: {entry['tag']}, env_id: {entry['env_id']}) using fallback task: '{current_task_description[:100]}...'. Task list was empty or not found for tag.")
+                self.logger.warning(f"DeepResearchEnv (tag: {env_tag}, env_id: {entry['env_id']}) unknown mode '{self.mode}'. Defaulting to 'train' tasks.")
+                relevant_task_list = train_task_list
+                selected_task_type_log = "unknown mode (defaulting to train)"
+                if not relevant_task_list:
+                    relevant_task_list = validation_task_list
+                    selected_task_type_log = "unknown mode (fallback to validation)"
+
+            if relevant_task_list:
+                if self.mode == "train":
+                    task_rng = random.Random(seed)
+                    current_task_description = task_rng.choice(relevant_task_list)
+                    self.logger.info(f"DeepResearchEnv (tag: {env_tag}, env_id: {entry['env_id']}, mode: {self.mode}) random task from '{selected_task_type_log}': {current_task_description[:100]}...")
+                else: # val or eval
+                    if len(relevant_task_list) > 0:
+                        task_index = self.episode_id % len(relevant_task_list)
+                        current_task_description = relevant_task_list[task_index]
+                        self.logger.info(f"DeepResearchEnv (tag: {env_tag}, env_id: {entry['env_id']}, mode: {self.mode}) sequential task {task_index + 1}/{len(relevant_task_list)} from '{selected_task_type_log}': {current_task_description[:100]}...")
+                    else: # Should not be reached if relevant_task_list is not empty, but defensive.
+                        current_task_description = self.prefix_lookup.get(entry["env_id"], f"Fallback for DeepResearchEnv {env_tag} - {selected_task_type_log} list was empty after check.")
+                        self.logger.warning(f"DeepResearchEnv (tag: {env_tag}, env_id: {entry['env_id']}, mode: {self.mode}) using fallback prefix_lookup for {selected_task_type_log}: {current_task_description[:100]}...")
+            else: # No tasks in relevant_task_list (primary or fallback)
+                current_task_description = self.prefix_lookup.get(entry["env_id"], f"Fallback for DeepResearchEnv {env_tag} - all task lists empty for mode {self.mode}.")
+                self.logger.warning(f"DeepResearchEnv (tag: {env_tag}, env_id: {entry['env_id']}, mode: {self.mode}) using fallback prefix_lookup (all lists empty): {current_task_description[:100]}...")
         else:
             # For other environment types, use the prefix_lookup as before
             current_task_description = self.prefix_lookup.get(entry["env_id"], "Default task for non-DeepResearch env.")
@@ -229,9 +266,8 @@ class EnvironmentWorker(Worker):
         if entry["tag"] == "DeepResearchEnv": # Check for DeepResearchEnv
             # Store the specific parts from DeepResearchEnv's reset output
             current_env_status.initial_system_prompt = reset_output.get("initial_observation")
-            current_env_status.task_description = reset_output.get("task_description")
-            # The initial user-facing message is the task description itself for DeepResearchEnv
-            next_state = current_env_status.task_description
+            current_env_status.task_description = current_task_description
+            next_state = current_task_description
         else:
             # Existing logic for other environments
             next_state = self._handle_mm_state(entry["env"].render())
@@ -812,113 +848,155 @@ class EnvironmentWorker(Worker):
         return [text], [messages]
 
     def _init_prefix_lookup(self):
-        # TODO: 这里并不合理 -> This comment was from the original code.
-        prefix_lookup = {}
-        prefixes = {} # This dict will store the final env instructions for self.prefix_lookup.
-        env_config_lookup_local = {}
+        # This method populates:
+        # 1. self.deepresearch_tasks_by_split: For DeepResearchEnv, loads tasks into "train" and "validation" lists.
+        # 2. self.prefix_lookup: Maps each global env_id to its initial instruction string (for non-DeepResearch or fallback).
+        # 3. self.env_config_lookup: Maps each global env_id to its specific config details (e.g., max_tokens).
+
+        # --- Part 1: Prepare per-tag information from global custom_envs ---
+        # `tag_specific_prefixes` will store the base instruction string for each env_tag.
+        # `tag_specific_env_configs` will store other specific configurations like max_tokens for each env_tag.
+        tag_specific_prefixes = {}
+        tag_specific_env_configs = {}
+
+        # Helper function to extract instructions from a list of task items
+        def extract_instructions(task_items: List[Any], logger_ref, env_tag_for_log: str) -> List[str]: # Added logger_ref and env_tag_for_log for context
+            extracted: List[str] = []
+            if isinstance(task_items, list):
+                for item_idx, item in enumerate(task_items):
+                    if isinstance(item, dict):
+                        instruction = item.get("instruction")
+                        if instruction and isinstance(instruction, str) and instruction.strip():
+                            extracted.append(instruction.strip())
+                        # else:
+                        #    logger_ref.debug(f"Task item {item_idx} for env_tag '{env_tag_for_log}' is not a dict with a valid 'instruction' string.")
+                    # else:
+                    #    logger_ref.debug(f"Task item {item_idx} for env_tag '{env_tag_for_log}' is not a dictionary.")
+            # else:
+            #    if task_items: # Only log if it's not an intentional empty list
+            #        logger_ref.debug(f"Task items for env_tag '{env_tag_for_log}' is not a list, but {type(task_items)}.")
+            return extracted
+
+        # Initialize self.deepresearch_tasks_by_split for all relevant tags first.
+        for tag_name, config_from_yaml in self.pipeline_config.custom_envs.items():
+            temp_default_config = REGISTERED_ENV_CONFIGS[config_from_yaml.env_type]()
+            temp_merged_config = asdict(temp_default_config)
+            temp_merged_config.update(config_from_yaml)
+
+            if temp_merged_config.get("env_type") == "deepresearch":
+                if tag_name not in self.deepresearch_tasks_by_split:
+                    self.deepresearch_tasks_by_split[tag_name] = {"train": [], "validation": []}
 
         for env_tag, env_config_from_yaml in self.pipeline_config.custom_envs.items():
-            if env_tag not in self.worker_config.tags:
-                continue
-
-            default_config_obj = REGISTERED_ENV_CONFIGS[env_config_from_yaml.env_type]()
-            env_config_new = asdict(default_config_obj)
+            default_env_type_config = REGISTERED_ENV_CONFIGS[env_config_from_yaml.env_type]()
+            env_config_new = asdict(default_env_type_config)
             env_config_new.update(env_config_from_yaml)
 
-            default_env_instruction = env_config_new.get("env_instruction", "")
-            # This will be the fallback instruction, potentially augmented for non-DeepResearch envs.
-            final_env_instruction_for_prefix_lookup = default_env_instruction
+            base_env_instruction = env_config_new.get("env_instruction", "")
 
             if env_config_new.get("env_type") == "deepresearch":
                 actual_env_params = env_config_new.get("env_config", {})
                 task_desc_file_path = actual_env_params.get("task_description_file")
-                loaded_tasks_for_tag: List[str] = []
+
+                train_tasks: List[str] = []
+                validation_tasks: List[str] = []
 
                 if task_desc_file_path and isinstance(task_desc_file_path, str):
-                    # Security check: only disallow '..' for path traversal
                     if ".." in task_desc_file_path:
                         self.logger.warning(
-                            f"Task description file path for '{env_tag}' ('{task_desc_file_path}') contains '..'. Skipping file load for security reasons."
+                            f"Task description file path for '{env_tag}' ('{task_desc_file_path}') contains '..'. Skipping file load."
                         )
-                        task_desc_file_path = None # Set to None to prevent loading
-
-                    if task_desc_file_path: # Proceed if path is still valid after check
+                    else:
                         self.logger.info(f"Attempting to load tasks for DeepResearchEnv '{env_tag}' from file: {task_desc_file_path}")
                         try:
                             with open(task_desc_file_path, "r", encoding="utf-8") as f:
                                 data = json.load(f)
 
-                            if isinstance(data, list):
-                                for item in data:
-                                    if isinstance(item, dict):
-                                        instruction = item.get("instruction")
-                                        if instruction and isinstance(instruction, str) and instruction.strip():
-                                            loaded_tasks_for_tag.append(instruction.strip())
-                                if loaded_tasks_for_tag:
-                                    self.deepresearch_task_lists[env_tag] = loaded_tasks_for_tag
-                                    self.logger.info(f"Successfully loaded {len(loaded_tasks_for_tag)} tasks for '{env_tag}' from {task_desc_file_path}.")
-                                    # If tasks are loaded, the prefix_lookup for this env_tag can still hold the fallback env_instruction.
-                                    # The reset method will prioritize deepresearch_task_lists.
+                            if isinstance(data, dict):
+                                train_tasks = extract_instructions(data.get("train", []), self.logger, env_tag)
+                                validation_tasks = extract_instructions(data.get("validation", []), self.logger, env_tag)
+                                if train_tasks or validation_tasks:
+                                    self.logger.info(f"Loaded {len(train_tasks)} train tasks and {len(validation_tasks)} validation tasks for '{env_tag}'.")
                                 else:
-                                    self.logger.warning(f"Task description file '{task_desc_file_path}' for '{env_tag}' did not yield any valid tasks (e.g., empty list, or list items not dicts with 'instruction' string).")
+                                    self.logger.warning(f"Task file '{task_desc_file_path}' for '{env_tag}' (dict format) had no valid tasks under 'train' or 'validation'.")
+                            elif isinstance(data, list):
+                                self.logger.info(f"Task file for '{env_tag}' is in legacy list format. Treating all tasks as training tasks.")
+                                train_tasks = extract_instructions(data, self.logger, env_tag)
+                                if train_tasks:
+                                    self.logger.info(f"Loaded {len(train_tasks)} tasks as training tasks (legacy format) for '{env_tag}'.")
+                                else:
+                                    self.logger.warning(f"Task file '{task_desc_file_path}' for '{env_tag}' (list format) yielded no valid tasks.")
                             else:
-                                self.logger.warning(f"Invalid JSON structure in '{task_desc_file_path}' for '{env_tag}': Expected a list of tasks, got {type(data)}.")
+                                self.logger.warning(f"Invalid JSON structure in '{task_desc_file_path}' for '{env_tag}'. Expected dict or list, got {type(data)}.")
                         except FileNotFoundError:
                             self.logger.warning(f"Task description file not found for '{env_tag}': {task_desc_file_path}.")
                         except json.JSONDecodeError:
                             self.logger.warning(f"Invalid JSON in task description file '{task_desc_file_path}' for '{env_tag}'.")
                         except Exception as e:
-                            self.logger.error(f"Error reading or parsing task description file '{task_desc_file_path}' for '{env_tag}': {e}")
+                            self.logger.error(f"Error reading/parsing task file '{task_desc_file_path}' for '{env_tag}': {e}")
 
-                if not loaded_tasks_for_tag: # No file path, or file ops failed, or file had no valid tasks
-                    self.logger.warning(f"No tasks loaded from file for DeepResearchEnv '{env_tag}'. It will use fallback instruction from 'env_instruction' or a hardcoded default.")
-                    self.deepresearch_task_lists[env_tag] = [] # Ensure it's an empty list
+                # Ensure the entry for the tag exists from pre-initialization
+                self.deepresearch_tasks_by_split[env_tag]["train"] = train_tasks
+                self.deepresearch_tasks_by_split[env_tag]["validation"] = validation_tasks
 
-                # Set up the fallback instruction in prefix_lookup
-                if not final_env_instruction_for_prefix_lookup: # If env_instruction in YAML was empty
-                    final_env_instruction_for_prefix_lookup = "Default DeepResearch task. Please ensure task_description_file is correctly configured or env_instruction is set in YAML."
-                    self.logger.info(f"Using hardcoded default fallback instruction for DeepResearchEnv '{env_tag}'.")
+                if not train_tasks and not validation_tasks:
+                     self.logger.warning(f"No tasks loaded from file for DeepResearchEnv '{env_tag}'. Fallback instruction may be used.")
 
-            else: # Not DeepResearchEnv
-                # For other env types, append grid_vocab and action_lookup to the default_env_instruction
-                # The variable final_env_instruction_for_prefix_lookup already holds default_env_instruction
+                if not base_env_instruction:
+                    base_env_instruction = "Default DeepResearch task. Task file might be missing or empty."
+                tag_specific_prefixes[env_tag] = base_env_instruction
+
+            else:
                 if env_config_new.get("grid_vocab", False):
                     grid_vocab_str = "\nThe meaning of each symbol in the state is:\n" + ", ".join(
                         [f"{k}: {v}" for k, v in env_config_new["grid_vocab"].items()]
                     )
-                    final_env_instruction_for_prefix_lookup += grid_vocab_str
+                    base_env_instruction += grid_vocab_str
                 if env_config_new.get("action_lookup", False):
                     action_lookup_str = "\nYour available actions are:\n" + ", ".join(
                         [f"{v}" for k, v in env_config_new["action_lookup"].items()]
                     )
-                    final_env_instruction_for_prefix_lookup += action_lookup_str
+                    base_env_instruction += action_lookup_str
+                tag_specific_prefixes[env_tag] = base_env_instruction
 
-            prefixes[env_tag] = final_env_instruction_for_prefix_lookup
-            env_config_lookup_local[env_tag] = {
+            tag_specific_env_configs[env_tag] = {
                 "max_tokens": env_config_new.get("max_tokens", self.pipeline_config.response_length)
             }
 
-        tags = self.worker_config.tags
-        n_groups = self.worker_config.n_groups
-        group_size = self.worker_config.group_size
+        temp_prefix_lookup = {}
+        temp_env_config_lookup = {}
+        global_env_id_counter = 0
 
-        # Initialize dictionaries for per-ID lookup BEFORE the loop
-        # prefix_lookup was already initialized at the top of the method.
-        # env_config_lookup needs to be initialized here.
-        env_config_lookup = {} # Initialize before use
+        managers_to_process = []
+        if hasattr(self.pipeline_config, 'train_env_manager') and self.pipeline_config.train_env_manager:
+            managers_to_process.append(self.pipeline_config.train_env_manager)
+        if hasattr(self.pipeline_config, 'val_env_manager') and self.pipeline_config.val_env_manager:
+            managers_to_process.append(self.pipeline_config.val_env_manager)
 
-        cur_group = 0
-        for env_tag, n_group in zip(tags, n_groups):
-            env_instruction_for_tag = prefixes[env_tag] # Use the final instruction
-            start_idx = cur_group * group_size
-            end_idx = (cur_group + n_group) * group_size
-            for i in range(start_idx, end_idx):
-                prefix_lookup[i] = env_instruction_for_tag # prefix_lookup is already the per-ID map
-                env_config_lookup[i] = env_config_lookup_local[env_tag] # Assign to initialized per-ID map
-            cur_group += n_group
+        for manager_cfg in managers_to_process:
+            for tag_idx, env_tag_for_mgr in enumerate(manager_cfg.tags):
+                num_groups_for_tag = manager_cfg.n_groups[tag_idx]
+                num_envs_for_tag_in_mgr = num_groups_for_tag * manager_cfg.group_size
 
-        self.prefix_lookup = prefix_lookup
-        self.env_config_lookup = env_config_lookup
+                for _ in range(num_envs_for_tag_in_mgr):
+                    if env_tag_for_mgr in tag_specific_prefixes:
+                        temp_prefix_lookup[global_env_id_counter] = tag_specific_prefixes[env_tag_for_mgr]
+
+                    if env_tag_for_mgr in tag_specific_env_configs:
+                        temp_env_config_lookup[global_env_id_counter] = tag_specific_env_configs[env_tag_for_mgr]
+                    elif env_tag_for_mgr in tag_specific_prefixes: # Fallback if not in specific env_configs (e.g. if only prefix was set)
+                         self.logger.warning(f"Env tag '{env_tag_for_mgr}' for env_id {global_env_id_counter} not found in tag_specific_env_configs, check max_tokens setup.")
+                         temp_env_config_lookup[global_env_id_counter] = {"max_tokens": self.pipeline_config.response_length} # Basic fallback
+                    else:
+                        self.logger.error(f"Env tag '{env_tag_for_mgr}' used in a manager but not found in custom_envs processing for env_id {global_env_id_counter}.")
+                        # Provide a very basic fallback to prevent crashes, though this indicates a config issue.
+                        temp_prefix_lookup[global_env_id_counter] = "Configuration error: Unknown environment tag."
+                        temp_env_config_lookup[global_env_id_counter] = {"max_tokens": self.pipeline_config.response_length}
+
+                    global_env_id_counter += 1
+
+        self.prefix_lookup = temp_prefix_lookup
+        self.env_config_lookup = temp_env_config_lookup
 
     def _parse_response(self, response: str) -> Tuple[str, List[str]]:
         actions: List[str] = []
