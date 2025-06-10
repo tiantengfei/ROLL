@@ -522,7 +522,7 @@ class DataProto:
             Iterator: an iterator that yields a mini-batch data at a time. The total number of iteration steps is
             ``self.batch.batch_size * epochs // mini_batch_size``
         """
-        assert self.batch.batch_size[0] % mini_batch_size == 0, f"{self.batch.batch_size[0]} % {mini_batch_size} != 0"
+        # assert self.batch.batch_size[0] % mini_batch_size == 0, f"{self.batch.batch_size[0]} % {mini_batch_size} != 0"
         # we can directly create a dataloader from TensorDict
         if dataloader_kwargs is None:
             dataloader_kwargs = {}

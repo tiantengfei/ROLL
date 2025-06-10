@@ -87,7 +87,7 @@ class ActorWorker(Worker):
             dataloader = data.make_iterator(
                 mini_batch_size=backward_batch_size,
                 epochs=self.pipeline_config.ppo_epochs,
-                dataloader_kwargs={"shuffle": True},
+                dataloader_kwargs={"shuffle": True, "drop_last": True}, # MODIFIED LINE
             )
 
             for batch_idx, data in tqdm(
@@ -454,7 +454,9 @@ class CriticWorker(Worker):
             )
 
             dataloader = data.make_iterator(
-                mini_batch_size=backward_batch_size, epochs=1, dataloader_kwargs={"shuffle": True}
+                mini_batch_size=backward_batch_size,
+                epochs=1,
+                dataloader_kwargs={"shuffle": True, "drop_last": True}, # MODIFIED LINE
             )
 
             for batch_idx, data in tqdm(

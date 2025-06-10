@@ -18,6 +18,7 @@ from tensordict import TensorDict
 from transformers import AutoTokenizer
 
 from roll.agentic.env import REGISTERED_ENVS, REGISTERED_ENV_CONFIGS
+from roll.agentic.env.deepresearch.deepresearch_env import NEXT_STEP_PROMPT
 from roll.distributed.executor.worker import Worker
 from roll.distributed.scheduler.decorator import Dispatch, register
 from roll.distributed.scheduler.generate_scheduler import OneRequestScheduler
@@ -770,8 +771,12 @@ class EnvironmentWorker(Worker):
                         # this part would need specific handling.
                         # self.logger.warning(f"DeepResearchEnv: Unhandled state in history: {content_item['state'][:100]}")
 
-                if "reward" in content_item and not (prepare_for_update and content_item is env_output["history"][-1]):
-                     messages.append({"role": "user", "content": f"Reward:\n{content_item['reward']}\n"})
+                # Determine if a user prompt for the next turn should be appended
+                should_append_user_prompt_for_next_turn = not (prepare_for_update and content_item is env_output["history"][-1])
+
+                if should_append_user_prompt_for_next_turn:
+                    # For DeepResearchEnv, append NEXT_STEP_PROMPT instead of reward
+                    messages.append({"role": "user", "content": NEXT_STEP_PROMPT})
         else:
             # Existing logic for other environments:
             messages = [
