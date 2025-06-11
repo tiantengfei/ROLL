@@ -294,8 +294,14 @@ class EnvironmentWorker(Worker):
         # execute actions in env
         valid_actions = self._extract_map_valid_actions(entry, env_input["actions"])
 
+        actions_to_pass_to_execute = valid_actions
+        if not valid_actions and entry.get("tag") == "DeepResearchEnv":
+            # If no valid actions were parsed and it's DeepResearchEnv,
+            # send an explicit "empty list of tool calls" action to the environment.
+            actions_to_pass_to_execute = ['[]']
+
         acc_reward, turn_info, turn_done, executed_actions = self._execute_actions(
-            entry["env"], valid_actions[:actions_left_before]
+            entry["env"], actions_to_pass_to_execute[:actions_left_before]
         )
 
         if len(valid_actions) != len(env_input["actions"]) or not valid_actions:
