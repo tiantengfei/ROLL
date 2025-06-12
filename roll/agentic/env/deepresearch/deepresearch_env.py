@@ -170,12 +170,24 @@ class LocalToolExecutor:
             return
 
         if not actions:
-            self.current_observation_text = "No actions were performed."
+            base_observation = "<tool_response>\nNo actions were performed.\n</tool_response>"
             self.latest_status_info = {"success": True, "message": "Empty action list processed."}
             if not self.task_completed and self.current_step >= self.max_steps:
                 self.task_completed = True
-                self.current_observation_text += "\nMax steps reached. Episode terminated."
+                # Append to the content inside tool_response or make a new observation
+                # For simplicity, let's ensure the primary observation is the "No actions" and termination is logged.
+                # The environment's done flag and info will signal termination.
+                # The observation text should primarily reflect the outcome of the action (or lack thereof).
+                # A separate "Max steps reached" could be part of info or a subsequent observation.
+                # Let's keep the observation simple for now, focused on the "no action".
+                # The user's log shows "Successfully executed tool..." so this path might not be the one for their example log anyway.
+                # The critical part is that if process_action decides the observation IS "No actions were performed", it should be tagged.
                 self.latest_status_info = {"success": False, "message": "Terminated due to max steps with empty action."}
+                # The original code appended "\nMax steps reached. Episode terminated." to current_observation_text.
+                # To keep it within tags if this path is taken:
+                base_observation = f"<tool_response>\nNo actions were performed. Max steps reached. Episode terminated.\n</tool_response>"
+
+            self.current_observation_text = base_observation
             logging.info(f"[LocalToolExecutor] Step {self.current_step}: Action(s)='{actions}', Done={self.task_completed}")
             logging.info(f"[LocalToolExecutor] Observation: {self.current_observation_text[:200]}...")
             return
@@ -240,17 +252,17 @@ class LocalToolExecutor:
 
             except json.JSONDecodeError:
                 error_message = f"Could not parse action JSON content: {processed_action_json_string}. Original string: {original_action_for_error_msg}"
-                # This error is about malformed action, not a direct tool response to a valid call attempt. Keep plain for now.
-                observation_parts.append(f"{i+1}. Error: {error_message}")
+                formatted_error_observation = f"<tool_response>\nError: {error_message}\n</tool_response>"
+                observation_parts.append(formatted_error_observation)
                 self.latest_status_info = {"success": False, "message": "Action JSON parsing error."}
                 continue
             except ToolError as e: # Covers missing function_name if not caught earlier, or other validation issues
                 error_message = str(e)
-                # This is a ToolError raised by our own validation, like non-dict parsed action. Keep plain.
-                if 'calling_tool_line' not in locals():
-                    calling_tool_line = f"Attempted call with malformed action: {original_action_for_error_msg}"
-                formatted_action_observation = f"{i+1}. {calling_tool_line}\n\nError: {error_message}" # Keep plain
-                observation_parts.append(formatted_action_observation)
+                # The 'calling_tool_line' might be too verbose for the LLM if it's part of the observation.
+                # Focus on the error message itself as the tool's "response".
+                error_message_details = f"Error processing tool action: {error_message}"
+                formatted_error_observation = f"<tool_response>\n{error_message_details}\n</tool_response>"
+                observation_parts.append(formatted_error_observation)
                 self.latest_status_info = {"success": False, "message": f"Invalid action item: {error_message}"}
             except (BrowserToolError, EditorToolError) as e:
                 error_message = str(e)
@@ -277,18 +289,56 @@ class LocalToolExecutor:
             if tool_executed_successfully_item:
                 tool_executed_successfully_overall = True
 
-        if observation_parts:
-            self.current_observation_text = "\n\n".join(observation_parts)
-        elif not actions:
-             self.current_observation_text = "No actions were performed."
-        else:
-              if self.latest_status_info.get("message") == "Processing actions.":
-                   self.current_observation_text = "Actions processed, but no specific observations were generated."
+        # --- Construct final observation text ---
+        final_observation_content = ""
 
+        if observation_parts:
+            # Join all collected (and already tagged) observation parts.
+            final_observation_content = "\n\n".join(observation_parts)
+        # `elif not actions:` is omitted as it's handled by the `if not actions:` block at the method's start.
+        elif actions: # `actions` list was not empty, but `observation_parts` is.
+            if self.latest_status_info.get("message") == "Processing actions.": # Default message if no specific tool output
+                final_observation_content = "Actions processed, but no specific observations were generated."
+            else: # Some other status, but still no specific tool output parts
+                final_observation_content = "Tool execution resulted in no specific textual output."
+        # If `actions` was empty, `final_observation_content` remains "",
+        # but that case is handled by the return at the method start.
+
+        # Handle max_steps termination message
+        max_steps_message = ""
         if not self.task_completed and self.current_step >= self.max_steps:
             self.task_completed = True
-            self.current_observation_text += "\n\nMax steps reached. Episode terminated."
+            max_steps_message = "Max steps reached. Episode terminated."
             self.latest_status_info = {"success": False, "message": "Terminated due to max steps."}
+
+        # Combine messages and ensure wrapping
+        if final_observation_content and max_steps_message:
+            # If there's existing content (which should be tagged <tool_response> items joined),
+            # and a max_steps message, try to append max_steps_message intelligently.
+            # For simplicity, if final_observation_content is a single tool_response, append inside.
+            # If it's multiple, it's harder. Let's make max_steps_message part of the last response or a new one.
+            # Safest: if final_observation_content is already tagged, create a new tagged message for max_steps if it's cleaner.
+            # For now, let's assume observation_parts usually has one item if not empty.
+            if final_observation_content.startswith("<tool_response>") and final_observation_content.endswith("</tool_response>") and '\n</tool_response>\n\n<tool_response>\n' not in final_observation_content:
+                 # Single tool response, try to insert before the end tag
+                 final_observation_content = final_observation_content[:-len("</tool_response>")] + f"\n{max_steps_message}\n</tool_response>"
+            else: # Multiple responses or not a simple tagged one, append as new tagged info.
+                 final_observation_content += f"\n\n<tool_response>\n{max_steps_message}\n</tool_response>" if max_steps_message else ""
+
+        elif max_steps_message: # Only max_steps_message to show
+            final_observation_content = f"<tool_response>\n{max_steps_message}\n</tool_response>"
+        elif not final_observation_content and actions: # Actions attempted, but no observation_parts and not max_steps
+            final_observation_content = "<tool_response>\nTool execution resulted in no textual output.\n</tool_response>"
+        elif not final_observation_content and not actions: # No actions and no observation parts (already handled by return at start, but for safety)
+            final_observation_content = "<tool_response>\nNo actions were performed.\n</tool_response>"
+
+
+        self.current_observation_text = final_observation_content
+
+        # Final safety net: if after all this, current_observation_text is empty but there were actions, provide a default.
+        # This case should ideally be covered by the logic above.
+        if not self.current_observation_text.strip() and actions:
+            self.current_observation_text = "<tool_response>\nTool execution resulted in an unspecified state.\n</tool_response>"
 
         if not self.task_completed and self.latest_status_info.get("message") == "Processing actions.":
             if tool_executed_successfully_overall:

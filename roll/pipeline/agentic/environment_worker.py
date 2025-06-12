@@ -758,24 +758,38 @@ class EnvironmentWorker(Worker):
 
                 # The 'state' field from history is the observation from the env after assistant's action.
                 if "state" in content_item and content_item["state"]:
-                    # For DeepResearchEnv, the first state is the task_description.
-                    # We need to ensure we don't add it again if already added,
-                    # or handle it if it's a tool_response.
-                    if content_item["state"] == task_desc_content and messages[-1]["role"] == "user" and messages[-1]["content"] == task_desc_content:
-                        # This is the initial task description, already added as the first user message. Skip.
+                    state_content_stripped = content_item["state"].strip()
+
+                    # Check if the state is the initial task description (and already added)
+                    is_initial_task_description = (
+                        state_content_stripped == task_desc_content and
+                        messages and messages[-1]["role"] == "user" and
+                        messages[-1]["content"] == task_desc_content
+                    )
+
+                    # Check if the state is the "No actions were performed" message (now wrapped in tags)
+                    # The message from LocalToolExecutor is "<tool_response>\nNo actions were performed.\n</tool_response>"
+                    # or "<tool_response>\nNo actions were performed. Max steps reached. Episode terminated.\n</tool_response>"
+                    is_no_actions_message = "No actions were performed." in state_content_stripped and                                             state_content_stripped.startswith("<tool_response>") and                                             state_content_stripped.endswith("</tool_response>")
+
+                    if is_initial_task_description:
+                        # Skip if it's the task description already added as the first user message
                         pass
-                    elif content_item["state"].strip().startswith("<tool_response>"):
-                         messages.append({
-                             "role": "tool",
-                             "content": content_item["state"].strip()
-                         })
+                    elif is_no_actions_message:
+                        # Skip adding the "No actions were performed" message to the prompt history as per user request
+                        self.logger.info(f"Skipping 'No actions were performed' message for DeepResearchEnv prompt history for env_id: {env_output.get('env_id', 'N/A')}.")
+                        pass
+                    elif state_content_stripped.startswith("<tool_response>"):
+                        # This is a genuine tool response (not the "no actions" one)
+                        messages.append({
+                            "role": "tool",
+                            "content": state_content_stripped
+                        })
                     # else:
-                        # Non-tool-response state from DeepResearchEnv. Could be a final message or error.
-                        # For now, these are not explicitly formatted into the LLM prompt here,
-                        # as the primary interaction loop is tool_call -> tool_response.
-                        # If DeepResearchEnv produces other kinds of states that need to go to LLM,
-                        # this part would need specific handling.
-                        # self.logger.warning(f"DeepResearchEnv: Unhandled state in history: {content_item['state'][:100]}")
+                        # Other types of state content not starting with <tool_response> (and not initial task desc or "no actions")
+                        # are currently not explicitly added to the messages list for DeepResearchEnv.
+                        # This behavior is maintained.
+                        # self.logger.warning(f"DeepResearchEnv: Unhandled state in history (not initial task, not <tool_response>, not 'no actions'): {state_content_stripped[:100]}")
 
                 # Determine if a user prompt for the next turn should be appended
                 should_append_user_prompt_for_next_turn = not (prepare_for_update and content_item is env_output["history"][-1])
