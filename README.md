@@ -16,6 +16,7 @@
   <a href="https://github.com/alibaba/ROLL/stargazers">
     <img src="https://img.shields.io/github/stars/alibaba/ROLL?style=social" alt="Repo stars">
   </a>
+  <a href="https://arxiv.org/abs/2506.06122"><img src="https://img.shields.io/static/v1?label=arXiv&message=Paper&color=red"></a>
   <!-- 组织主页：点击跳转到 https://github.com/alibaba -->
   <a href="./assets/roll_wechat.png" target="_blank">
     <img src="https://img.shields.io/badge/WeChat-green?logo=wechat" alt="WeChat QR">
@@ -34,9 +35,11 @@ Leveraging a multi-role distributed architecture with Ray for flexible resource 
 
 ## 📢 News
 
-| 📣   Updates                                                                                               |
-|:-----------------------------------------------------------------------------------------------------------|
-| **[05/30/2025]** 🎉 Training RLVR and Agentic RL with ROLL is now available! Explore the new capabilities. |
+| 📣   Updates                                                                                                                                   |
+|:-----------------------------------------------------------------------------------------------------------------------------------------------|
+| **[06/13/2025]** Support Qwen2.5 VL rlvr pipeline and upgrade mcore to 0.12 version.                    |
+| **[06/09/2025]** 🎉 ROLL tech report is now available! Access the report [here](https://arxiv.org/abs/2506.06122).                     |
+| **[05/30/2025]** 🎉 Training RLVR and Agentic RL with ROLL is now available! Explore the new capabilities.                                     |
 ---
 
 ## 🗺️ Architecture at a Glance
@@ -52,6 +55,22 @@ New to **ROLL**? The interactive mind-map below gives you a bird’s-eye view of
   </a><br>
   <sub>Click the image to view the <b>HD</b> version</sub>
 </p>
+
+---
+
+## 🚀 Get Started
+
+[Documents](https://alibaba.github.io/ROLL/)
+
+### Quick Start
+
+[Quick Start based on alicloud](https://alibaba.github.io/ROLL/docs/English/StepByStep/alicloud_pipeline_quick_start_en)  
+[Installation](https://alibaba.github.io/ROLL/docs/English/QuickStart/installation)  
+[Config guide](https://alibaba.github.io/ROLL/docs/English/QuickStart/config_guide)
+
+### Step By Step
+[RLVR Pipeline](https://alibaba.github.io/ROLL/docs/English/StepByStep/rlvr_pipeline_start)  
+[Agentic RL Pipeline](https://alibaba.github.io/ROLL/docs/English/StepByStep/agent_pipeline_start)
 
 ---
 
@@ -137,62 +156,6 @@ We are continuously working to expand ROLL's capabilities:
 
 ---
 
-## 🚀 Get Started
-
-### Installation
-
-#### 🐳 Install from Docker
-
-We provide pre-built Docker images for a quick start (Links will be updated):
-
-* `torch2.6.0 + SGlang0.4.6`: roll-registry.cn-hangzhou.cr.aliyuncs.com/roll/pytorch:nvcr-24.05-py3-torch260-sglang046
-* `torch2.6.0 + vLLM0.8.4`: roll-registry.cn-hangzhou.cr.aliyuncs.com/roll/pytorch:nvcr-24.05-py3-torch260-vllm084
-* `torch2.5.1 + SGlang0.4.3`: roll-registry.cn-hangzhou.cr.aliyuncs.com/roll/pytorch:nvcr-24.05-py3-torch251-sglang043
-* `torch2.5.1 + vLLM0.7.3`: roll-registry.cn-hangzhou.cr.aliyuncs.com/roll/pytorch:nvcr-24.05-py3-torch251-vllm073
-
-You can also find Dockerfiles under the `docker/` directory to build your own images.
-
-#### 🛠️ Install from Custom Environment
-
-If our pre-built Docker images are not compatible with your environment, you can install ROLL and its dependencies in your Python environment. Please ensure you meet the following prerequisites:
-
-```bash
-# Prerequisites
-CUDA Version >= 12.4
-cuDNN Version >= 9.1.0
-PyTorch >= 2.5.1
-SGlang >= 0.4.3
-vLLM >= 0.7.3
-
-# Clone the repository and install
-git clone https://github.com/alibaba/ROLL.git
-cd ROLL
-pip install -r requirements.txt # Or follow your specific installation steps
-# For development, consider: pip install -e .
-```
-
-### 🗺️ RLVR Step-by-Step
-
-For a detailed guide on using the RLVR pipeline, please see our [📜 RLVR Pipeline Quick Start](./docs/examples/rlvr_pipeline_start.md).
-
-### 🤖 Agentic RL Step-by-Step
-
-For a detailed guide on using the Agentic RL pipeline, please see our [📜 Agent Pipeline Quick Start](./docs/examples/agent_pipeline_start.md).
-
-### ⚙️ Configuration Guide
-
-ROLL integrates cutting-edge technologies like Megatron-Core, SGLang and vLLM to accelerate model training and inference. For a guide on configuring ROLL, please see our [📜 Configuration Guide](./docs/examples/config_guide.md).
-
-### 🔄 About Model Checkpoint Format
-
-For `MegatronStrategy`, model checkpoints are saved in Megatron format by default. To convert them back to HuggingFace format, please use the following command:
-
-```bash
-python mcore_adapter/tools/convert.py --checkpoint_path path_to_megatron_model --output_path path_to_output_hf_model
-```
-
------
-
 ## 🙏 Citation and Acknowledgement
 
 ROLL is inspired by the design of OpenRLHF, VeRL, Nemo-Aligner, and RAGEN.
@@ -210,11 +173,10 @@ If you use ROLL in your research or project, please consider citing us:
 ```bibtex
 @misc{roll2025alibaba,
   author = {ROLL Team and Other ROLL Contributors},
-  title = {ROLL: Reinforcement Learning Optimization for Large-Scale Learning (An Efficient and User-Friendly Scaling Library)},
+  title = {Reinforcement Learning Optimization for Large-Scale Learning: An Efficient and User-Friendly Scaling Library},
   year = {2025},
-  publisher = {GitHub},
-  journal = {GitHub repository},
-  howpublished = {\url{[https://github.com/alibaba/ROLL](https://github.com/alibaba/ROLL)}}
+  journal = {arXiv preprint arXiv: 2506.06122},
+  url = {https://arxiv.org/abs/2506.06122}
 }
 ```
 
